@@ -21,23 +21,13 @@ import qrcode
 
 
 @torch.no_grad()
-def fed_avg(models: List[nn.Module], weights: torch.Tensor, device='cuda:0'):
-    """
-        models: list of nn.modules(unpruned/pruning removed)
-        weights: normalized weights for each model
-        cls:  Class of original model
-    """
+def fed_avg(models, device):
     aggr_model = models[0].__class__().to(device)
-    model_params = []
-    num_models = len(models)
-    for model in models:
-        model_params.append(dict(model.named_parameters()))
-
     for name, param in aggr_model.named_parameters():
         param.data.copy_(torch.zeros_like(param.data))
-        for i in range(num_models):
+        for model in models:
             weighted_param = torch.mul(
-                model_params[i][name].data, weights[i])
+                dict(model.named_parameters())[name].data)
             param.data.copy_(param.data + weighted_param)
     return aggr_model
 

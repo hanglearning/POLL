@@ -54,13 +54,18 @@ parser.add_argument('--num_malicious', type=int, default=0, help="number of mali
 
 ####################### pruning setting #######################
 parser.add_argument('--target_spar', type=float, default=0.8)
+parser.add_argument('--sig_portion', type=float, default=0.25, help="portion of the subsampled weights used to construct the signature")
+parser.add_argument('--sig_threshold', type=float, default=0.8, help="portion of the signature that satisfied hard requirement")
+
 
 ####################### blockchain setting #######################
 parser.add_argument('--prune_diff', type=float, default=0.2, help='base pruning difficulty')
 parser.add_argument('--diff_freq', type=int, default=1, help='difficulty increases every this-number-of rounds')
-parser.add_argument('--num_devices', type=int, default=10)
-parser.add_argument('--num_lotters', type=str, default='7', 
+parser.add_argument('--num_devices', type=int, default=16)
+parser.add_argument('--num_lotters', type=str, default='10', 
                     help='The number of validators is determined by this number and --num_devices. If input * to this argument, num of lotters and validators are random from round to round')
+parser.add_argument('--validator_portion', type=int, default=0.5,
+                    help='this determins how many validators should one lotter send transactions to. e.g., there are 6 validators in the network and validator_portion = 0.5, then one lotter will send transaction to 6*0.5=3 validators')
 parser.add_argument('--check_signature', type=int, default=1, 
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
 parser.add_argument('--network_stability', type=float, default=1.0, 
@@ -128,25 +133,46 @@ def main():
             else:
                 devices_list[device_iter].role = 'validator'
                 validators.append(devices_list[device_iter])
-            
-        ''' device set is_online '''
+        
+        ''' reinit params '''
+        # device set is_online
         for device in devices_list:
             device.set_is_online()
         
+        for validator in validators:
+            validator.associated_lotters = set()
+            validator.verified_transactions = set()
+        
         ''' device starts Fed-POLL '''
-        ### lotter starts learning and pruning
+        ### lotter starts learning and pruning ###
         for lotter_iter in range(len(lotters)):
             lotter = lotters[lotter_iter]
             # resync chain
             lotter.resync_chain() #TODO - update global model
-            # warm the mask
-            if not lotter.mask_embedded:
+            if lotter._mask:
+                # fresh joining, warm the mask
                 print(f"Lotter ({lotter_iter+1}/{num_lotters}) is warming its mask...")
                 lotter.warm_initial_mask()
-                    
-            print(f"Lotter ({lotter_iter+1}/{num_lotters}) is ")
-                  
-        
+            else:
+                # perform regular ticket learning
+                lotter.regular_ticket_learning()
+            # create model signature
+            lotter.create_model_sig()
+            # make transaction
+            lotter.make_transaction()
+            # associate with validators
+            lotter.asso_validators(validators)
+            
+        ### validator validates and perform FedAvg ###
+        for validator_iter in range(len(validators)):
+            validator = validators[validator_iter]
+            # resync chain
+            validator.resync_chain() #TODO - update global model
+            # verify transaction signature
+            validator.verify_lotter_tx()
+            # verify model_signature is within mask
+            validator.verify_model_sig_positions()
+
         
 
 if __name__ == "__main__":
