@@ -138,11 +138,18 @@ def main():
         # device set is_online
         for device in devices_list:
             device.set_is_online()
+            device._received_blocks = []
         
         for validator in validators:
-            validator.associated_lotters = set()
-            validator.verified_transactions = set()
-        
+            validator._associated_lotters = set()
+            validator._received_lotter_txs = set()
+            validator._verified_lotter_txs = set()
+            validator._lotter_idx_to_model_score = {}
+            validator._received_validator_txs = set()
+            validator._verified_validator_txs = set()
+            validator._final_ticket_model = None
+            validator._final_models_signatures = set()
+            
         ''' device starts Fed-POLL '''
         ### lotter starts learning and pruning ###
         for lotter_iter in range(len(lotters)):
@@ -159,7 +166,7 @@ def main():
             # create model signature
             lotter.create_model_sig()
             # make transaction
-            lotter.make_transaction()
+            lotter.make_lotter_transaction()
             # associate with validators
             lotter.asso_validators(validators)
             
@@ -169,10 +176,35 @@ def main():
             # resync chain
             validator.resync_chain() #TODO - update global model
             # verify transaction signature
-            validator.verify_lotter_tx()
+            validator.verify_lotter_tx_sig()
             # verify model_signature is within mask
             validator.verify_model_sig_positions()
-
+            # validate model accuracy
+            validator.validate_model_accuracy()
+            # validator make tx
+            validator.make_validator_transaction()
+            # validate exchange transaction and validation results
+            validator.exchange_and_verify_validator_tx(validators)
+            # validator aggregate model scores and produce global ticket model
+            validator.produce_global_model()
+            # validator produce block
+            block = validator.produce_block()
+            # validator broadcasts block
+            validator.broadcast_block(devices_list, block)
+            
+        ### all devices process received blocks ###
+        for device in devices_list:
+            # pick winning block based on PoS
+            winning_block = device.pick_wining_block()
+            if not winning_block:
+                device.need_chain_resync = True
+                continue
+            # append block
+            if not device.append_block(winning_block):
+                device.need_chain_resync = True
+                continue
+            # process block
+            device.process_block()
         
 
 if __name__ == "__main__":

@@ -19,9 +19,11 @@ from torch.nn import functional as F
 import gzip
 import qrcode
 
+from util import 
+
 
 @torch.no_grad()
-def fed_avg(models, device):
+def fedavg(models, device):
     aggr_model = models[0].__class__().to(device)
     for name, param in aggr_model.named_parameters():
         param.data.copy_(torch.zeros_like(param.data))
@@ -117,20 +119,20 @@ def train(
 
 
 @ torch.no_grad()
-def test(
+def test_by_train_data(
     model: nn.Module,
-    test_dataloader: DataLoader,
+    train_loader: DataLoader,
     device='cuda:0',
     fast_dev_run=False,
     verbose=True,
 ) -> Dict[str, torch.Tensor]:
 
-    num_batch = len(test_dataloader)
+    num_batch = len(train_loader)
     model.eval()
     global metrics
 
     metrics = metrics.to(device)
-    progress_bar = tqdm(enumerate(test_dataloader),
+    progress_bar = tqdm(enumerate(train_loader),
                         total=num_batch,
                         file=sys.stdout,
                         disable=not verbose)

@@ -3,95 +3,66 @@ import json
 from hashlib import sha256
 
 class Block:
-	def __init__(self, idx, previous_block_hash=None, transactions=None, nonce=0, miner_rsa_pub_key=None, mined_by=None, mining_rewards=None, pow_proof=None, signature=None):
-		self._idx = idx
-		self._previous_block_hash = previous_block_hash
-		self._transactions = transactions
-		self._nonce = nonce
-		# miner specific
-		self._miner_rsa_pub_key = miner_rsa_pub_key
-		self._mined_by = mined_by
-		self._mining_rewards = mining_rewards
-		# validator specific
-		# self._is_validator_block = is_validator_block
-		# the hash of the current block, calculated by compute_hash
-		self._pow_proof = pow_proof
-		self._signature = signature
+    def __init__(self, previous_block_hash, all_transactions,global_ticket_model, model_signatures, model_scores, produced_by, validator_rsa_pub_key):
+        self.previous_block_hash = previous_block_hash
+        self.all_transactions = all_transactions
+        self.global_ticket_model = global_ticket_model
+        self.model_signatures = model_signatures
+        self.model_scores = model_scores
+        # validator specific
+        self.produced_by = produced_by
+        self.validator_rsa_pub_key = validator_rsa_pub_key
+        self.block_signature = None
 
-	# compute_hash() also used to return value for block verification
-	# if False by default, used for pow and verification, in which pow_proof has to be None, because at this moment -
-	# pow - block hash is None, so does not affect much
-	# verification - the block already has its hash
-	# if hash_entire_block == True -> used in set_previous_block_hash, where we need to hash the whole previous block
-	def compute_hash(self, hash_entire_block=False):
-		block_content = copy.deepcopy(self.__dict__)
-		if not hash_entire_block:
-			block_content['_pow_proof'] = None
-			block_content['_signature'] = None
-			block_content['_mining_rewards'] = None
-		# need sort keys to preserve order of key value pairs
-		return sha256(str(sorted(block_content.items())).encode('utf-8')).hexdigest()
+    # compute_hash() also used to return value for block verification
+    # if False by default, used for pow and verification, in which pow_proof has to be None, because at this moment -
+    # pow - block hash is None, so does not affect much
+    # verification - the block already has its hash
+    # if hash_entire_block == True -> used in set_previous_block_hash, where we need to hash the whole previous block
+    def compute_hash(self):
+        # need sort keys to preserve order of key value pairs
+        return sha256(str(sorted(self.__dict__.items())).encode('utf-8')).hexdigest()
 
-	def remove_signature_for_verification(self):
-		self._signature = None
+    def remove_signature_for_verification(self):
+        self.signature = None
 
-	def set_pow_proof(self, the_hash):
-		self._pow_proof = the_hash
+    # returners of the private attributes
+    
+    def get_previous_block_hash(self):
+        return self.previous_block_hash
+    
+    def get_validator_rsa_pub_key(self):
+        return self.validator_rsa_pub_key
 
-	def nonce_increment(self):
-		self._nonce += 1
+    ''' Miner Specific '''
+    def set_previous_block_hash(self, hash_to_set):
+        self._previous_block_hash = hash_to_set
 
-	# returners of the private attributes
-	
-	def get_previous_block_hash(self):
-		return self._previous_block_hash
+    def set_mined_by(self, mined_by):
+        self._mined_by = mined_by
+    
+    def get_mined_by(self):
+        return self._mined_by
 
-	def get_block_idx(self):
-		return self._idx
-	
-	def get_pow_proof(self):
-		return self._pow_proof
-	
-	def get_miner_rsa_pub_key(self):
-		return self._miner_rsa_pub_key
+    def set_signature(self, signature):
+        # signed by mined_by node
+        self._signature = signature
 
-	''' Miner Specific '''
-	def set_previous_block_hash(self, hash_to_set):
-		self._previous_block_hash = hash_to_set
+    def get_signature(self):
+        return self._signature
 
-	def add_verified_transaction(self, transaction):
-		# after verified in cross_verification()
-		# transactions can be both workers' or validators' transactions
-		self._transactions.append(transaction)
+    def set_mining_rewards(self, mining_rewards):
+        self._mining_rewards = mining_rewards
 
-	def set_nonce(self, nonce):
-		self._nonce = nonce
+    def get_mining_rewards(self):
+        return self._mining_rewards
+    
+    def get_transactions(self):
+        return self._transactions
 
-	def set_mined_by(self, mined_by):
-		self._mined_by = mined_by
-	
-	def get_mined_by(self):
-		return self._mined_by
-
-	def set_signature(self, signature):
-		# signed by mined_by node
-		self._signature = signature
-
-	def get_signature(self):
-		return self._signature
-
-	def set_mining_rewards(self, mining_rewards):
-		self._mining_rewards = mining_rewards
-
-	def get_mining_rewards(self):
-		return self._mining_rewards
-	
-	def get_transactions(self):
-		return self._transactions
-
-	# a temporary workaround to free GPU mem by delete txs stored in the blocks. Not good when need to resync chain
-	def free_tx(self):
-		try:
-			del self._transactions
-		except:
-			pass
+    # a temporary workaround to free GPU mem by delete txs stored in the blocks. Not good when need to resync chain
+    def free_tx(self):
+        try:
+            del self._transactions
+        except:
+            pass
