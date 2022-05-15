@@ -15,6 +15,12 @@ from dataset.datasource import DataLoaders
 from torchmetrics import MetricCollection, Accuracy, Precision, Recall
 import random
 
+''' abbreviations:
+    tx: transaction
+    sig: digital signature
+    m_sig: model signature
+'''
+
 models = {
     'cifar10': {
         'cnn': CIFAR_CNN,
@@ -32,8 +38,8 @@ parser = argparse.ArgumentParser(description='POLL - Proof Of Lottery Learning')
 parser.add_argument('--save_freq', type=int, default=10)
 parser.add_argument('--log_dir', type=str, default="./logs")
 parser.add_argument('--train_verbose', type=bool, default=False)
-parser.add_argument('--test_verbose', type=bool, default=False)
-parser.add_argument('--prune_verbose', type=bool, default=False)
+parser.add_argument('--test_verbose', type=bool, default=True)
+parser.add_argument('--prune_verbose', type=bool, default=True)
 parser.add_argument('--resync_verbose', type=bool, default=False)
 parser.add_argument('--seed', type=int, default=40)
 parser.add_argument('--wandb_username', type=str, default=None)
@@ -48,8 +54,11 @@ parser.add_argument('--epochs', type=int, default=10)
 parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--n_samples', type=int, default=20)
-parser.add_argument('--n_class', type=int, default=2)
-parser.add_argument('--num_malicious', type=int, default=0, help="number of malicious nodes in the network")
+parser.add_argument('--n_class', type=int, default=3)
+parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
+parser.add_argument('--malicious_activator', type=float, default=0.5, help="probabilty that the malicious actor performs malicious actions")
+parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
+
 
 
 ####################### pruning setting #######################
@@ -61,16 +70,22 @@ parser.add_argument('--sig_threshold', type=float, default=0.8, help="portion of
 ####################### blockchain setting #######################
 parser.add_argument('--prune_diff', type=float, default=0.2, help='base pruning difficulty')
 parser.add_argument('--diff_freq', type=int, default=1, help='difficulty increases every this-number-of rounds')
-parser.add_argument('--num_devices', type=int, default=16)
-parser.add_argument('--num_lotters', type=str, default='10', 
-                    help='The number of validators is determined by this number and --num_devices. If input * to this argument, num of lotters and validators are random from round to round')
+parser.add_argument('--n_devices', type=int, default=8)
+parser.add_argument('--lotter_reward', type=int, default=10)
+parser.add_argument('--validator_reward', type=int, default=8)
+parser.add_argument('--win_val_reward', type=int, default=15)
+parser.add_argument('--validator_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
+parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted lotter txes have invalid model_sigs, the block will be dropped")
+parser.add_argument('--n_lotters', type=str, default='4', 
+                    help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of lotters and validators are random from round to round')
 parser.add_argument('--validator_portion', type=int, default=0.5,
-                    help='this determins how many validators should one lotter send transactions to. e.g., there are 6 validators in the network and validator_portion = 0.5, then one lotter will send transaction to 6*0.5=3 validators')
+                    help='this determins how many validators should one lotter send txs to. e.g., there are 6 validators in the network and validator_portion = 0.5, then one lotter will send tx to 6*0.5=3 validators')
 parser.add_argument('--check_signature', type=int, default=1, 
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
 parser.add_argument('--network_stability', type=float, default=1.0, 
                     help='the odds a device can be reached')
-
+# parser.add_argument('--kick_out_rounds', type=int, default=6, 
+#                     help='if a lotter reaches this many of rounds of negative votes, its model will not be considered for averaging') # TODO- change to consecutive. Actually, gave up this idea as this is public chain
 
 # unknown settings
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
@@ -86,17 +101,17 @@ def main():
     args.dev_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     
     ######## setup wandb ########
-    wandb.login()
-    wandb.init(project="POLL", entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime("%m%d%Y_%H%M%S")
-    wandb.run.save()
-    wandb.config.update(args)
+    # wandb.login()
+    # wandb.init(project="POLL", entity=args.wandb_username)
+    # wandb.run.name = datetime.now().strftime("%m%d%Y_%H%M%S")
+    # wandb.run.save()
+    # wandb.config.update(args)
     
     ######## initiate devices ########
     init_global_model = create_model(cls=models[args.dataset]
                          [args.arch], device=args.dev_device)
-
-    train_loaders, test_loaders = DataLoaders(num_devices=args.num_devices,
+    
+    train_loaders, test_loaders = DataLoaders(n_devices=args.n_devices,
                                               dataset_name=args.dataset,
                                               n_class=args.n_class,
                                               nsamples=args.n_samples,
@@ -106,11 +121,14 @@ def main():
                                               num_workers=args.num_workers)
     
     idx_to_device = {}
-    for i in range(args.num_devices):
-        device = Device(i, args, train_loaders[i], test_loaders[i], init_global_model)
-        idx_to_device[i] = device
+    n_malicious = args.n_malicious
+    for i in range(args.n_devices):
+        is_malicious = True if n_malicious > 0 else False
+        device = Device(i + 1, is_malicious, args, train_loaders[i], test_loaders[i], init_global_model)
+        idx_to_device[i + 1] = device
+        n_malicious -= 1
     
-    devices_list = idx_to_device.values()
+    devices_list = list(idx_to_device.values())
     for device in devices_list:
         device.assign_peers(idx_to_device)
     
@@ -118,93 +136,101 @@ def main():
     for comm_round in range(1, args.comm_rounds + 1):
         
         ''' device assign roles '''
-        if args.num_lotters == '*':
-            num_lotters = random.randint(0, args.num_devices - 1)
+        if args.n_lotters == '*':
+            n_lotters = random.randint(0, args.n_devices - 1)
         else:
-            num_lotters = int(args.num_lotters)
+            n_lotters = int(args.n_lotters)
                     
-        devices_list = random.shuffle(devices_list)
-        lotters = []
-        validators = []
+        random.shuffle(devices_list)
+        online_lotters = []
+        online_validators = []
         for device_iter in range(len(devices_list)):
-            if device_iter < num_lotters:
+            if device_iter < n_lotters:
                 devices_list[device_iter].role = 'lotter'
-                lotters.append(devices_list[device_iter])
+                if devices_list[device_iter].is_online():
+                    online_lotters.append(devices_list[device_iter])
             else:
                 devices_list[device_iter].role = 'validator'
-                validators.append(devices_list[device_iter])
+                if devices_list[device_iter].is_online():
+                    online_validators.append(devices_list[device_iter])
         
+        online_devices_list = online_lotters + online_validators
         ''' reinit params '''
         # device set is_online
-        for device in devices_list:
-            device.set_is_online()
+        for device in online_devices_list:
             device._received_blocks = []
         
-        for validator in validators:
+        for validator in online_validators:
             validator._associated_lotters = set()
-            validator._received_lotter_txs = set()
-            validator._verified_lotter_txs = set()
-            validator._lotter_idx_to_model_score = {}
-            validator._received_validator_txs = set()
+            validator._verified_lotter_txs = {}
+            validator._neg_votes_txes = {}
+            validator._received_validator_txs = {}
             validator._verified_validator_txs = set()
             validator._final_ticket_model = None
             validator._final_models_signatures = set()
+            validator._dup_pos_votes_txes = {}
             
         ''' device starts Fed-POLL '''
         ### lotter starts learning and pruning ###
-        for lotter_iter in range(len(lotters)):
-            lotter = lotters[lotter_iter]
+        for lotter_iter in range(len(online_lotters)):
+            lotter = online_lotters[lotter_iter]
             # resync chain
-            lotter.resync_chain() #TODO - update global model
-            if lotter._mask:
-                # fresh joining, warm the mask
-                print(f"Lotter ({lotter_iter+1}/{num_lotters}) is warming its mask...")
-                lotter.warm_initial_mask()
+            if lotter.resync_chain(comm_round, idx_to_device, online_devices_list):
+                print(f"Lotter ({lotter_iter+1}/{len(online_lotters)}) is warming its mask...")
+                lotter.update_global_model(comm_round)
+                lotter.warm_mask()
             else:
                 # perform regular ticket learning
                 lotter.regular_ticket_learning()
             # create model signature
             lotter.create_model_sig()
-            # make transaction
-            lotter.make_lotter_transaction()
+            # make tx
+            lotter.make_lotter_tx()
             # associate with validators
-            lotter.asso_validators(validators)
+            lotter.asso_validators(online_validators)
             
-        ### validator validates and perform FedAvg ###
-        for validator_iter in range(len(validators)):
-            validator = validators[validator_iter]
+        ### validators validate models and broadcast transations ###
+        for validator_iter in range(len(online_validators)):
+            validator = online_validators[validator_iter]
             # resync chain
-            validator.resync_chain() #TODO - update global model
-            # verify transaction signature
-            validator.verify_lotter_tx_sig()
-            # verify model_signature is within mask
-            validator.verify_model_sig_positions()
-            # validate model accuracy
-            validator.validate_model_accuracy()
-            # validator make tx
-            validator.make_validator_transaction()
-            # validate exchange transaction and validation results
-            validator.exchange_and_verify_validator_tx(validators)
-            # validator aggregate model scores and produce global ticket model
+            if validator.resync_chain(comm_round, idx_to_device, online_devices_list):
+                print(f"Validator ({validator_iter+1}/{len(online_validators)}) is warming its mask...")
+                validator.update_global_model(comm_round)
+                validator.warm_mask()
+            else:
+                pass
+            # verify tx signature
+            validator.receive_and_verify_lotter_tx_sig()
+            # validate model accuracy and form voting tx
+            validator.validate_models_and_init_validator_tx()
+        
+        ### validators perform FedAvg and produce blocks ###
+        for validator_iter in range(len(online_validators)):
+            validator = online_validators[validator_iter]
+            # validate exchange tx and validation results
+            validator.exchange_and_verify_validator_tx(online_validators)
+            # validator produces global ticket model
             validator.produce_global_model()
             # validator produce block
             block = validator.produce_block()
             # validator broadcasts block
-            validator.broadcast_block(devices_list, block)
+            validator.broadcast_block(online_devices_list, block)
             
         ### all devices process received blocks ###
-        for device in devices_list:
+        for device in online_devices_list:
             # pick winning block based on PoS
             winning_block = device.pick_wining_block()
             if not winning_block:
-                device.need_chain_resync = True
+                # perform chain_resync last round
                 continue
             # append block
             if not device.append_block(winning_block):
-                device.need_chain_resync = True
+                # TODO - record forking event
+                # perform chain_resync last round
                 continue
             # process block
             device.process_block()
+            # device.test_accuracy()
         
 
 if __name__ == "__main__":

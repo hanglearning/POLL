@@ -17,10 +17,17 @@ from torch.utils.data import DataLoader
 from typing import List, Tuple, Dict, Union
 from torch.nn import functional as F
 import gzip
-import qrcode
 
-from util import 
-
+class AddGaussianNoise(object):
+	def __init__(self, mean=0., std=1.):
+		self.std = std
+		self.mean = mean
+		
+	def __call__(self, tensor):
+		return tensor + torch.randn(tensor.size()) * self.std + self.mean
+	
+	def __repr__(self):
+		return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
 
 @torch.no_grad()
 def fedavg(models, device):
@@ -29,9 +36,9 @@ def fedavg(models, device):
         param.data.copy_(torch.zeros_like(param.data))
         for model in models:
             weighted_param = torch.mul(
-                dict(model.named_parameters())[name].data)
+                dict(model.named_parameters())[name].data, 1/len(models))
             param.data.copy_(param.data + weighted_param)
-    return aggr_model
+    return aggr_model    
 
 
 def create_model(cls, device='cuda:0') -> nn.Module:
@@ -172,7 +179,7 @@ def l1_prune(model, amount=0.00, name='weight', verbose=True):
         global_pruning = info['global']
         info.pop('global')
         print(tabulate(info, headers='keys', tablefmt='github'))
-        print("Total Pruning: {}%".format(global_pruning))
+        print("Total Pruning: {}%".format(global_pruning * 100))
 
 
 """
@@ -204,7 +211,7 @@ def get_prune_params(model, name='weight') -> List[Tuple[nn.Parameter, str]]:
                 params_to_prune.append((module, name))
     return params_to_prune
 
-def get_prune_amount_by_0_weights_by_0_weights(model):
+def get_pruned_amount_by_0_weights(model):
     num_zeros, num_weights = 0, 0
     params_pruned = get_prune_params(model, 'weight')
     for layer, weight_name in params_pruned:
@@ -217,113 +224,29 @@ def get_prune_amount_by_0_weights_by_0_weights(model):
     
     return num_zeros / num_weights
 
+def get_num_total_model_params(model):
+    total_num_model_params = 0
+    # not including bias
+    for layer_name, params in model.named_parameters():
+        if 'weight' in layer_name:
+            total_num_model_params += params.numel()
+    return total_num_model_params
+
+def get_model_sig_sparsity(model, model_sig):
+    total_num_model_params = get_num_total_model_params(model)
+    total_num_sig_non_0_params = 0
+    for layer, layer_sig in model_sig.items():
+        total_num_sig_non_0_params += len(list(zip(*np.where(layer_sig!=0))))
+    return total_num_sig_non_0_params / total_num_model_params
+
 def generate_mask_from_0_weights(model):
     params_to_prune = get_prune_params(model)
     for param, name in params_to_prune:
         weights = getattr(param, name)
         mask_amount = torch.eq(weights.data, 0.00).sum().item()
         prune.l1_unstructured(param, name, amount=mask_amount)
-        
-def extract_mask(model):
-    # either use NO-stealing -> chosen
-    # or use module.weight_mask
-    mask_dict = {}
-    for key in model.state_dict().keys():
-        if 'mask' in key:
-            mask_dict[key] = model.state_dict()[key]
-    return mask_dict
 
-def gen_qr(sig):
-    
-    qr = qrcode.QRCode(
-    version=3,
-    error_correction=qrcode.constants.ERROR_CORRECT_H,
-    box_size=1,
-    border=0,
-    )
-    qr.add_data(sig)
-    qr.make()
-
-    img = qr.make_image(fill_color="black", back_color="white")
-    qr_code_array = np.array(img)
-    return qr_code_array
-
-def get_qr_max_sim_position(code, mask):
-    h,w = code.shape[0],code.shape[1]
-    max_sim = 0
-    for layer_name in mask:
-        mask_ = mask[layer_name].sum((2,3)).numpy() > 0
-        mask_ = mask_.astype(float)
-        if (mask_.shape[0] - code.shape[0] < 0) or (mask_.shape[1] - code.shape[1] < 0):
-            continue
-        sim = np.zeros((mask_.shape[0] - code.shape[0] + 1, mask_.shape[1] - code.shape[1] + 1))
-        for i in range(sim.shape[0]):
-            for j in range(sim.shape[1]):
-                sim[i,j] = (mask_[i:i+h,j:j+w] == code).mean()
-
-        if np.max(sim) > max_sim:
-            max_layer_name = layer_name
-            max_sim = np.max(sim)
-    mask_ = mask[max_layer_name].sum((2,3)).numpy() > 0
-    mask_ = mask_.astype(float)
-    sim = np.zeros((mask_.shape[0] - code.shape[0] + 1, mask_.shape[1] - code.shape[1] + 1))
-    for i in range(sim.shape[0]):
-        for j in range(sim.shape[1]):
-            sim[i,j] = (mask_[i:i+h,j:j+w] == code).mean()
-    r, c = np.where(sim == np.max(sim))
-    start_x = r[0]
-    start_y = c[0]
-    return max_layer_name, start_x, start_y, h, w
-
-def embed_qr_into_mask(mask, max_name, code, r, c, h, w):
-    real_mask = mask[max_name].numpy()[r:r+h, c:c+w].copy()
-    real_mask_one = (real_mask == 1).sum()
-    real_mask_flat = ((real_mask).sum((2,3)) > 0).astype(float)
-    
-    for i in range(code.shape[0]):
-        for j in range(code.shape[1]):
-            if code[i,j] == 1 and real_mask_flat[i,j] == 0:
-                _ = np.array([0] * 9)
-                _[0] = 1
-                new_mask = np.random.permutation(_)
-                real_mask[i,j] = new_mask.reshape((3, 3))
-                real_mask_flat[i,j] == 1
-            elif code[i,j] == 0 and real_mask_flat[i,j] == 1:
-                real_mask[i,j] = 0
-                real_mask_flat[i,j] == 0
-
-    original_mask = mask[max_name][r:r+h, c:c+w].clone().numpy()
-    real_mask[0:9, 0:9] = original_mask[0:9, 0:9]
-    real_mask[-9:,:9] = original_mask[-9:,:9]
-    real_mask[:9,-9:] = original_mask[:9,-9:]
-    real_mask[20:25, 20:25] = original_mask[20:25, 20:25]
-    real_mask[-8, 4 * 3 + 9] = 1
-    real_mask[6] = original_mask[6]
-    real_mask[:, 6] = original_mask[:, 6]
-
-    real_mask_one_new = (real_mask == 1).sum()
-    real_mask_flat_new = (real_mask).sum((2,3))
-    diff = real_mask_one_new - real_mask_one
-    # print(diff)
-
-    if (diff > 0):
-        # remove some connections
-        real_mask_flat_greater_0 = np.where(real_mask_flat_new > 1)
-    else:
-        # recover some connections
-        pos = np.expand_dims((code == 1), (2, 3)) * np.expand_dims(real_mask_flat == 1, (2,3)) * (real_mask == 0)
-        pos = np.where(pos)
-        pos = np.stack(pos)
-        # print(pos.shape)
-        pos = pos[:, np.random.permutation(pos.shape[1])[:(-diff)]]
-        # print(pos.shape)
-        for i in range(pos.shape[1]):
-            p = pos[:, i]
-            real_mask[p[0], p[1], p[2], p[3]] = 1
-    mask[max_name][r:r+h, c:c+w] = torch.from_numpy(real_mask)
-    return mask
-
-def get_prune_amount_by_mask():
+def get_pruned_amount_by_mask():
     pass
 
 def get_prune_summary(model, name='weight') -> Dict[str, Union[List[Union[str, float]], float]]:

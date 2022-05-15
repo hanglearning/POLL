@@ -1,5 +1,6 @@
 from Block import Block
 import copy
+from hashlib import sha256
 
 class Blockchain:
     
@@ -23,11 +24,11 @@ class Blockchain:
             return None
 
     def get_cur_pruning_diff(self):
-        return (len(self.chain // self.difficulty_increase_frequency) + 1) * self.base_pruning_difficulty
+        return (len(self.chain) // self.difficulty_increase_frequency + 1) * self.base_pruning_difficulty
 
     def get_last_block_hash(self):
         if len(self.chain) > 0:
-            return self.get_last_block().compute_hash(hash_entire_block=True)
+            return self.get_last_block().compute_hash()
         else:
             return None
 
@@ -38,12 +39,15 @@ class Blockchain:
         # check previous_block hash match
         if not self.get_last_block_hash():
             self.chain.append(copy.copy(block))
-            self.last_block_hash = block.compute_block_hash()
+            # self.last_block_hash = block.compute_block_hash()
             return True
         else:
             last_block_hash = self.blockchain.get_last_block_hash()
             if block['previous_block_hash'] == last_block_hash:
                 self.chain.append(copy.copy(block))
-                self.last_block_hash = block.compute_block_hash()
+                # self.last_block_hash = block.compute_block_hash()
                 return True
         return False
+    
+    def drop_block(self):
+        self.chain.pop()

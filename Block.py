@@ -3,12 +3,13 @@ import json
 from hashlib import sha256
 
 class Block:
-    def __init__(self, previous_block_hash, all_transactions,global_ticket_model, model_signatures, model_scores, produced_by, validator_rsa_pub_key):
+    def __init__(self, previous_block_hash, global_ticket_model, pos_votes_txes, dup_pos_votes_txes, neg_votes_txes, participating_validators, produced_by, validator_rsa_pub_key):
         self.previous_block_hash = previous_block_hash
-        self.all_transactions = all_transactions
         self.global_ticket_model = global_ticket_model
-        self.model_signatures = model_signatures
-        self.model_scores = model_scores
+        self.pos_votes_txes = pos_votes_txes
+        self.dup_pos_votes_txes = dup_pos_votes_txes
+        self.neg_votes_txes = neg_votes_txes
+        self.participating_validators = participating_validators
         # validator specific
         self.produced_by = produced_by
         self.validator_rsa_pub_key = validator_rsa_pub_key
@@ -57,12 +58,12 @@ class Block:
     def get_mining_rewards(self):
         return self._mining_rewards
     
-    def get_transactions(self):
-        return self._transactions
+    def get_txs(self):
+        return self._txs
 
     # a temporary workaround to free GPU mem by delete txs stored in the blocks. Not good when need to resync chain
     def free_tx(self):
         try:
-            del self._transactions
+            del self._txs
         except:
             pass
