@@ -4,6 +4,7 @@ import argparse
 import pickle
 from datetime import datetime
 from pytorch_lightning import seed_everything
+from Blockchain import Blockchain
 from model.cifar10.cnn import CNN as CIFAR_CNN
 from model.cifar10.mlp import MLP as CIFAR_MLP
 from model.mnist.cnn import CNN as MNIST_CNN
@@ -135,6 +136,12 @@ def main():
     ######## Fed-POLL ########
     for comm_round in range(1, args.comm_rounds + 1):
         
+        if comm_round == 3:
+            print()
+        
+        text = f'Comm Round {comm_round}'
+        print(f"{len(text) * '='}\n{text}\n{len(text) * '='}")
+        
         ''' device assign roles '''
         if args.n_lotters == '*':
             n_lotters = random.randint(0, args.n_devices - 1)
@@ -176,8 +183,10 @@ def main():
             lotter = online_lotters[lotter_iter]
             # resync chain
             if lotter.resync_chain(comm_round, idx_to_device, online_devices_list):
+                lotter.post_resync()
+            if not lotter.blockchain.get_last_block():
+                # if just joined - mask hasn't warmed
                 print(f"Lotter ({lotter_iter+1}/{len(online_lotters)}) is warming its mask...")
-                lotter.update_global_model(comm_round)
                 lotter.warm_mask()
             else:
                 # perform regular ticket learning
@@ -194,11 +203,11 @@ def main():
             validator = online_validators[validator_iter]
             # resync chain
             if validator.resync_chain(comm_round, idx_to_device, online_devices_list):
+                validator.post_resync()
+            if not validator.blockchain.get_last_block():
+                # if just joined - mask hasn't warmed
                 print(f"Validator ({validator_iter+1}/{len(online_validators)}) is warming its mask...")
-                validator.update_global_model(comm_round)
                 validator.warm_mask()
-            else:
-                pass
             # verify tx signature
             validator.receive_and_verify_lotter_tx_sig()
             # validate model accuracy and form voting tx

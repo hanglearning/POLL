@@ -42,8 +42,8 @@ class Blockchain:
             # self.last_block_hash = block.compute_block_hash()
             return True
         else:
-            last_block_hash = self.blockchain.get_last_block_hash()
-            if block['previous_block_hash'] == last_block_hash:
+            last_block_hash = self.get_last_block_hash()
+            if block.previous_block_hash == last_block_hash:
                 self.chain.append(copy.copy(block))
                 # self.last_block_hash = block.compute_block_hash()
                 return True

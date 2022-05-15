@@ -2,7 +2,7 @@ import numpy as np
 from torchvision import datasets, transforms
 
 
-def get_dataset_mnist_extr_noniid(num_devices, n_class, nsamples, rate_unbalance):
+def get_dataset_mnist_extr_noniid(n_devices, n_class, nsamples, rate_unbalance):
     data_dir = './data'
     apply_transform = transforms.Compose([
         transforms.ToTensor(),
@@ -15,22 +15,22 @@ def get_dataset_mnist_extr_noniid(num_devices, n_class, nsamples, rate_unbalance
 
     # Chose euqal splits for every user
     user_groups_train, user_groups_test = mnist_extr_noniid(
-        train_dataset, test_dataset, num_devices, n_class, nsamples, rate_unbalance)
+        train_dataset, test_dataset, n_devices, n_class, nsamples, rate_unbalance)
     return train_dataset, test_dataset, user_groups_train, user_groups_test
 
 
-def mnist_extr_noniid(train_dataset, test_dataset, num_devices, n_class, num_samples, rate_unbalance):
+def mnist_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_samples, rate_unbalance):
     num_shards_train, num_imgs_train = int(60000/num_samples), num_samples
     num_classes = 10
     num_imgs_perc_test, num_imgs_test_total = 1000, 10000
 
-    assert(n_class * num_devices <= num_shards_train)
+    assert(n_class * n_devices <= num_shards_train)
     assert(n_class <= num_classes)
 
     idx_class = [i for i in range(num_classes)]
     idx_shard = np.array([i for i in range(num_shards_train)])
-    dict_users_train = {i: np.array([]) for i in range(num_devices)}
-    dict_users_test = {i: np.array([]) for i in range(num_devices)}
+    dict_users_train = {i: np.array([]) for i in range(n_devices)}
+    dict_users_test = {i: np.array([]) for i in range(n_devices)}
     idxs = np.arange(num_shards_train*num_imgs_train)
 
     labels = np.array(train_dataset.targets)
@@ -52,7 +52,7 @@ def mnist_extr_noniid(train_dataset, test_dataset, num_devices, n_class, num_sam
         idxs_test_splits[labels_test[i]].append(idxs_test[i])
 
     idx_shards = np.split(idx_shard, 10)
-    for i in range(num_devices):
+    for i in range(n_devices):
         user_labels = np.array([])
         temp_set = set(np.random.choice(10, n_class, replace=False))
         rand_set = []

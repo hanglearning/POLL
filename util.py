@@ -187,21 +187,6 @@ Hadamard Mult of Mask and Attributes,
 then return zeros
 """
 
-
-@ torch.no_grad()
-def summarize_prune(model: nn.Module, name: str = 'weight') -> tuple:
-    """
-        returns (pruned_params,total_params)
-    """
-    num_pruned = 0
-    params, num_global_weights, _ = get_prune_params(model)
-    for param, _ in params:
-        if hasattr(param, name+'_mask'):
-            data = getattr(param, name+'_mask')
-            num_pruned += int(torch.sum(data == 0.0).item())
-    return (num_pruned, num_global_weights)
-
-
 def get_prune_params(model, name='weight') -> List[Tuple[nn.Parameter, str]]:
     # iterate over network layers
     params_to_prune = []
@@ -211,18 +196,43 @@ def get_prune_params(model, name='weight') -> List[Tuple[nn.Parameter, str]]:
                 params_to_prune.append((module, name))
     return params_to_prune
 
-def get_pruned_amount_by_0_weights(model):
-    num_zeros, num_weights = 0, 0
-    params_pruned = get_prune_params(model, 'weight')
-    for layer, weight_name in params_pruned:
 
-        num_layer_zeros = torch.sum(
-            getattr(layer, weight_name) == 0.0).item()
-        num_zeros += num_layer_zeros
-        num_layer_weights = torch.numel(getattr(layer, weight_name))
-        num_weights += num_layer_weights
+def get_pruned_amount_by_0_weights(model):
+    total_params_count = get_num_total_model_params(model)
+    total_0_count = 0
+    for layer, module in model.named_children():
+        for name, weight_params in module.named_parameters():
+            if 'weight' in name:
+                total_0_count += len(list(zip(*np.where(weight_params == 0))))
+    return total_0_count / total_params_count
+
+def get_pruned_amount_from_mask(model):
+    total_params_count = get_num_total_model_params(model)
+    total_0_count = 0
+    for layer, module in model.named_children():
+        for name, mask in module.named_buffers():
+            if 'mask' in name:
+                total_0_count += len(list(zip(*np.where(mask == 0))))
+    return total_0_count / total_params_count
+
+def produce_mask_from_model(model):
+    # use prune with 0 amount to init mask for the model
+    l1_prune(model=model,
+                amount=0.00,
+                name='weight',
+                verbose=False)
+    layer_to_masked_positions = {}
+    for layer, module in model.named_children():
+        for name, weight_params in module.named_parameters():
+            if 'weight' in name:
+                layer_to_masked_positions[layer] = list(zip(*np.where(weight_params == 0)))
+        
+    for layer, module in model.named_children():
+        for name, mask in module.named_buffers():
+            if 'mask' in name:
+                for pos in layer_to_masked_positions[layer]:
+                    mask[pos] = 0
     
-    return num_zeros / num_weights
 
 def get_num_total_model_params(model):
     total_num_model_params = 0

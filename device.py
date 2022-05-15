@@ -14,7 +14,7 @@ import copy
 import math
 import wandb
 from torch.nn.utils import prune
-from util import get_prune_summary, get_pruned_amount_by_0_weights, l1_prune, get_prune_params, copy_model, fedavg, test_by_train_data,   AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params
+from util import get_prune_summary, get_pruned_amount_by_0_weights, l1_prune, get_prune_params, copy_model, fedavg, test_by_train_data, AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params, produce_mask_from_model, get_pruned_amount_from_mask
 from util import train as util_train
 from util import test_by_train_data
 
@@ -92,50 +92,48 @@ class Device():
         return random.random() <= self.args.network_stability
     
     def resync_chain(self, comm_round, idx_to_device, online_devices_list):
-        # return if need to warm mask
         if comm_round == 1:
-            return True
+            return False
+        if self.stake_book:
+            # resync chain from the recorded device that has the highest stake and online
+            self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
+            for device_idx, stake in self.stake_book.items():
+                device = idx_to_device[device_idx]
+                if device in online_devices_list:
+                    # compare chain difference
+                    if self.blockchain.get_last_block_hash() == device.blockchain.get_last_block_hash():
+                        if self.args.resync_verbose:
+                            print(f"{self.role} {self.idx}'s chain not resynced.")
+                        return False
+                    else:
+                        # validate chain
+                        if not self.validate_chain(device.blockchain):
+                            continue
+                        # update chain
+                        self.blockchain.replace_chain(device.blockchain.chain)
+                        print(f"{self.role} {self.idx}'s chain resynced chain from {device.idx}.")
+                        # update stake_book
+                        self.stake_book = device.stake_book
+                        return True
         else:
-            if self.stake_book:
-                # resync chain from the recorded device that has the highest stake and online
-                self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
-                for device_idx, stake in self.stake_book.items():
-                    device = idx_to_device[device_idx]
-                    if device in online_devices_list:
-                        # compare chain difference
-                        if self.blockchain.get_last_block_hash() == device.blockchain.get_last_block_hash():
-                            if self.args.resync_verbose:
-                                print(f"{self.role} {self.idx}'s chain not resynced.")
-                            return False
-                        else:
-                            # validate chain
-                            if not self.validate_chain(device.blockchain):
-                                continue
-                            # update chain
-                            self.blockchain.replace_chain(device.blockchain)
-                            print(f"{self.role} {self.idx}'s chain resynced chain from {device.idx}.")
-                            # update stake_book
-                            self.stake_book = device.stake_book
-                            return True
-            else:
-                # sync chain by randomly picking a device when join in the middle (or got offline in the first comm round)
-                picked_device = random.choice(online_devices_list)
-                while online_devices_list:
-                    # validate chain
-                    if not self.validate_chain(picked_device.blockchain):
-                        online_devices_list.remove(picked_device)
-                        continue
-                    self.blockchain.replace_chain(picked_device.blockchain)
-                    self.stake_book = picked_device.stake_book
-                    print(f"{self.role} {self.idx}'s chain resynced chain from {device.idx}.")
-                    return True
+            # sync chain by randomly picking a device when join in the middle (or got offline in the first comm round)
+            picked_device = random.choice(online_devices_list)
+            while online_devices_list:
+                # validate chain
+                if not self.validate_chain(picked_device.blockchain):
+                    online_devices_list.remove(picked_device)
+                    continue
+                self.blockchain.replace_chain(picked_device.blockchain)
+                self.stake_book = picked_device.stake_book
+                print(f"{self.role} {self.idx}'s chain resynced chain from {device.idx}.")
+                return True
         print(f"{self.role} {self.idx}'s chain not resynced due to all other chains are invalid.")
         return False
             
-    def update_global_model(self, comm_round):
-        if comm_round == 1:
-            return
-        self.model = self.blockchain.get_last_block().global_ticket_model
+    def post_resync(self):
+        # update global model from the new block
+        self.model = deepcopy(self.blockchain.get_last_block().global_ticket_model)
+        # reinit mask and warm again?
             
     
     def validate_chain(self, chain_to_check):
@@ -163,11 +161,12 @@ class Device():
     def warm_mask(self):
         # only do it once at the begining of joining
         # 1. train; 2. introduce noise; 3. prune;
-        self.train()
-        # if malicious, introduce noise
-        if self.is_malicious and random.random() <= self.args.malicious_activator:
-            self.poison_model()
-        self.prune()
+        if not self._mask:
+            self.train()
+            # if malicious, introduce noise
+            if self.is_malicious and random.random() <= self.args.malicious_activator:
+                self.poison_model()
+            self.prune()
     
     def regular_ticket_learning(self):
         # 1. prune; 2. reinit; 3. train; 4. introduce noice;
@@ -211,23 +210,29 @@ class Device():
     def prune(self):
         if not self._mask:
             # warming mask
-            curr_model_pruned_amount = get_pruned_amount_by_0_weights(model=self.model)
-            amount_to_prune = curr_model_pruned_amount + self.args.prune_diff
+            produce_mask_from_model(self.model)
+            amount_to_prune = self.args.prune_diff
         else:
             # apply local mask to global model weights
+            produce_mask_from_model(self.model)
             for layer, module in self.model.named_children():
                 for name, weight_params in module.named_parameters():
                     if 'weight' in name:
                         weight_params.data.copy_(torch.tensor(np.multiply(weight_params.data, self._mask[layer])))
-            # use prune to "reproduce" current mask - but this might be wrong
+            # apply local mask to produced mask
+            for layer, module in self.model.named_children():
+                for name, mask in module.named_buffers():
+                    if 'mask' in name:
+                        mask.data.copy_(torch.tensor(np.multiply(mask.data, self._mask[layer])))
+            
             already_pruned_amount = get_pruned_amount_by_0_weights(model=self.model)
             curr_prune_diff = self.blockchain.get_cur_pruning_diff()
-            amount_to_prune = max(already_pruned_amount, curr_prune_diff)
-        
-        l1_prune(model=self.model,
-                amount=amount_to_prune,
-                name='weight',
-                verbose=self.args.prune_verbose)
+            amount_to_prune = max(curr_prune_diff - already_pruned_amount, 0) # Okay, this amount_to_prune, is on top of the already existing mask
+        if amount_to_prune:
+            l1_prune(model=self.model,
+                    amount=amount_to_prune,
+                    name='weight',
+                    verbose=self.args.prune_verbose)
         # update local mask
         for layer, module in self.model.named_children():
                 for name, mask in module.named_buffers():
@@ -237,7 +242,11 @@ class Device():
     def reinit_params(self):
         source_params = dict(self.init_global_model.named_parameters())
         for name, param in self.model.named_parameters():
-            param.data.copy_(source_params[name].data)
+            if 'bias' in name:
+                param.data.copy_(source_params[name].data)
+            else:
+                layer = name.split('.')[0]
+                param.data.copy_(source_params[name].data * self._mask[layer])
             
     def create_model_sig(self):
         
@@ -405,7 +414,9 @@ class Device():
                     param.data.copy_(torch.mul(param, 1/by_how_many))
             return new_models_list        
         
-        
+        if not self._verified_lotter_txs:
+            # this validator has not received any lotter tx
+            return
         # validate model and model_sig sparsity
         lotter_idx_to_model = {}
         for lotter_idx, lotter_tx in self._verified_lotter_txs.items():
@@ -578,7 +589,7 @@ class Device():
             else:
                 self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
                 received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks}
-                for validator, stake in self.stake_book:
+                for validator, stake in self.stake_book.items():
                     if validator in received_validators_to_blocks:
                         return received_validators_to_blocks[validator]
             
