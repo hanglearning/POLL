@@ -10,13 +10,12 @@ from torch.nn import Module
 import numpy as np
 import os
 from typing import Dict
-import copy
 import math
 import wandb
 from torch.nn.utils import prune
-from util import get_prune_summary, get_pruned_amount_by_0_weights, l1_prune, get_prune_params, copy_model, fedavg, test_by_train_data, AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params, produce_mask_from_model, get_pruned_amount_from_mask
+from util import get_prune_summary, get_pruned_amount_by_0_weights, l1_prune, get_prune_params, copy_model, fedavg, fedavg_lotteryfl, test_by_data_set, AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params, get_pruned_amount_from_mask, produce_mask_from_model, apply_local_mask, pytorch_make_prune_permanent
 from util import train as util_train
-from util import test_by_train_data
+from util import test_by_data_set
 
 from copy import copy, deepcopy
 from Crypto.PublicKey import RSA
@@ -37,6 +36,8 @@ class Device():
         args,
         train_loader,
         test_loader,
+        user_labels,
+        global_test_loader,
         init_global_model,
     ):
         self.idx = idx
@@ -45,6 +46,8 @@ class Device():
         self._mask = {}
         self._train_loader = train_loader
         self._test_loader = test_loader
+        self._user_labels = user_labels
+        self.global_test_loader = global_test_loader
         self.init_global_model = copy_model(init_global_model, args.dev_device)
         self.model = copy_model(init_global_model, args.dev_device)
         self.model_sig = None
@@ -54,7 +57,7 @@ class Device():
         # self.device_dict = None
         self.peers = None
         self.stake_book = None
-        self.blockchain = Blockchain()
+        self.blockchain = Blockchain(args.diff_base, args.diff_incre, args.diff_freq, args.target_spar)
         self._received_blocks = []
         self._black_list = {}
         # for lotters
@@ -94,6 +97,8 @@ class Device():
     def resync_chain(self, comm_round, idx_to_device, online_devices_list):
         if comm_round == 1:
             return False
+        online_devices_list = copy(online_devices_list)
+        online_devices_list.remove(self)
         if self.stake_book:
             # resync chain from the recorded device that has the highest stake and online
             self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
@@ -102,23 +107,21 @@ class Device():
                 if device in online_devices_list:
                     # compare chain difference
                     if self.blockchain.get_last_block_hash() == device.blockchain.get_last_block_hash():
-                        if self.args.resync_verbose:
-                            print(f"{self.role} {self.idx}'s chain not resynced.")
-                        return False
+                        return
                     else:
                         # validate chain
                         if not self.validate_chain(device.blockchain):
                             continue
                         # update chain
                         self.blockchain.replace_chain(device.blockchain.chain)
-                        print(f"{self.role} {self.idx}'s chain resynced chain from {device.idx}.")
+                        print(f"{self.role} {self.idx}'s chain is resynced from {device.idx}, who picked {idx_to_device[device.idx].blockchain.get_last_block().produced_by}'s block.")
                         # update stake_book
                         self.stake_book = device.stake_book
                         return True
         else:
             # sync chain by randomly picking a device when join in the middle (or got offline in the first comm round)
-            picked_device = random.choice(online_devices_list)
             while online_devices_list:
+                picked_device = random.choice(online_devices_list)
                 # validate chain
                 if not self.validate_chain(picked_device.blockchain):
                     online_devices_list.remove(picked_device)
@@ -127,14 +130,13 @@ class Device():
                 self.stake_book = picked_device.stake_book
                 print(f"{self.role} {self.idx}'s chain resynced chain from {device.idx}.")
                 return True
-        print(f"{self.role} {self.idx}'s chain not resynced due to all other chains are invalid.")
+        if self.args.resync_verbose:
+            print(f"{self.role} {self.idx}'s chain not resynced.")
         return False
             
     def post_resync(self):
         # update global model from the new block
-        self.model = deepcopy(self.blockchain.get_last_block().global_ticket_model)
-        # reinit mask and warm again?
-            
+        self.model = copy_model(self.blockchain.get_last_block().global_ticket_model, self.args.dev_device)            
     
     def validate_chain(self, chain_to_check):
         return True
@@ -158,25 +160,70 @@ class Device():
             
     
     ######## lotters method ########
-    def warm_mask(self):
-        # only do it once at the begining of joining
-        # 1. train; 2. introduce noise; 3. prune;
-        if not self._mask:
-            self.train()
-            # if malicious, introduce noise
-            if self.is_malicious and random.random() <= self.args.malicious_activator:
-                self.poison_model()
-            self.prune()
     
-    def regular_ticket_learning(self):
+    def ticket_learning(self):
+        print()
         # 1. prune; 2. reinit; 3. train; 4. introduce noice;
         self.prune()
         self.reinit_params()
         self.train()
         # if malicious, introduce noise
-        if self.is_malicious and random.random() <= self.args.malicious_activator:
+        if self.is_malicious:
             self.poison_model()
     
+    # def warm_mask(self):
+    #     # for new comers - an extra train at the begining
+    #     self.train()
+        
+    def prune(self):
+        print(f"Lotter {self.idx} is pruning.\nCurrent pruned amount:{get_pruned_amount_by_0_weights(model=self.model):.2%}")
+        if not self._mask:
+            # new lotter
+            # warm_mask - train then prune
+            # self.warm_mask()
+            # vs directly prune
+            pass
+        else:
+            # apply local mask to global model weights
+            apply_local_mask(self.model, self._mask)
+        already_pruned_amount = get_pruned_amount_by_0_weights(model=self.model)
+        curr_diff_increiculty = self.blockchain.get_cur_pruning_diff()
+        amount_to_prune = max(already_pruned_amount, curr_diff_increiculty)
+        
+        if amount_to_prune:
+            l1_prune(model=self.model,
+                    amount=amount_to_prune,
+                    name='weight',
+                    verbose=self.args.prune_verbose)
+            
+        if not self.args.prune_verbose:
+            print(f"After prunign, pruned amount:{get_pruned_amount_by_0_weights(model=self.model):.2%}")
+            
+        # update local mask
+        for layer, module in self.model.named_children():
+            for name, mask in module.named_buffers():
+                if 'mask' in name:
+                    self._mask[layer] = mask
+                        
+    def reinit_params(self):
+        source_params = dict(self.init_global_model.named_parameters())
+        for name, param in self.model.named_parameters():
+            param.data.copy_(source_params[name].data)
+        print(f"Lotter {self.idx} has reinitialized its parameters.")
+            
+    def train(self):
+        print(f"Lotter {self.idx} with labels {self._user_labels} is training for {self.args.epochs} epochs...")
+        for epoch in range(self.args.epochs):
+            if self.args.train_verbose:
+                print(
+                    f"Device={self.idx}, epoch={epoch}, comm_round:{self.blockchain.get_chain_length()+1}")
+            metrics = util_train(self.model,
+                                 self._train_loader,
+                                 self.args.lr,
+                                 self.args.dev_device,
+                                 self.args.train_verbose)
+
+            
     def poison_model(self):
         def malicious_worker_add_noise_to_weights(m):
             with torch.no_grad():
@@ -187,66 +234,7 @@ class Device():
                     self.variance_of_noises.append(float(variance_of_noise))
         # check if masks are disturbed as well
         self.model.apply(malicious_worker_add_noise_to_weights)
-        
-    def train(self):
-        """
-            Train local model
-        """
-        for epoch in range(self.args.epochs):
-            if self.args.train_verbose:
-                print(
-                    f"Device={self.idx}, epoch={epoch}, comm_round:{self.blockchain.get_chain_length()+1}")
-
-            metrics = util_train(self.model,
-                                 self._train_loader,
-                                 self.args.lr,
-                                 self.args.dev_device,
-                                 self.args.fast_dev_run,
-                                 self.args.train_verbose)
-
-            if self.args.fast_dev_run:
-                break
-    
-    def prune(self):
-        if not self._mask:
-            # warming mask
-            produce_mask_from_model(self.model)
-            amount_to_prune = self.args.prune_diff
-        else:
-            # apply local mask to global model weights
-            produce_mask_from_model(self.model)
-            for layer, module in self.model.named_children():
-                for name, weight_params in module.named_parameters():
-                    if 'weight' in name:
-                        weight_params.data.copy_(torch.tensor(np.multiply(weight_params.data, self._mask[layer])))
-            # apply local mask to produced mask
-            for layer, module in self.model.named_children():
-                for name, mask in module.named_buffers():
-                    if 'mask' in name:
-                        mask.data.copy_(torch.tensor(np.multiply(mask.data, self._mask[layer])))
-            
-            already_pruned_amount = get_pruned_amount_by_0_weights(model=self.model)
-            curr_prune_diff = self.blockchain.get_cur_pruning_diff()
-            amount_to_prune = max(curr_prune_diff - already_pruned_amount, 0) # Okay, this amount_to_prune, is on top of the already existing mask
-        if amount_to_prune:
-            l1_prune(model=self.model,
-                    amount=amount_to_prune,
-                    name='weight',
-                    verbose=self.args.prune_verbose)
-        # update local mask
-        for layer, module in self.model.named_children():
-                for name, mask in module.named_buffers():
-                    if 'mask' in name:
-                        self._mask[layer] = mask
-                        
-    def reinit_params(self):
-        source_params = dict(self.init_global_model.named_parameters())
-        for name, param in self.model.named_parameters():
-            if 'bias' in name:
-                param.data.copy_(source_params[name].data)
-            else:
-                layer = name.split('.')[0]
-                param.data.copy_(source_params[name].data * self._mask[layer])
+        print(f"Device {self.idx} has poisoned its model.")
             
     def create_model_sig(self):
         
@@ -342,12 +330,6 @@ class Device():
         return model_sig
     
     def make_lotter_tx(self):
-        
-        def pytorch_make_prune_permanent(model):
-            params_pruned = get_prune_params(model, name='weight')
-            for param, name in params_pruned:
-                prune.remove(param, name)
-            return model
                 
         lotter_tx = {
             'lotter_idx' : self.idx,
@@ -377,7 +359,7 @@ class Device():
         for lotter in self._associated_lotters:
             if self.verify_tx_sig(lotter._lotter_tx):
                 # TODO - check sig of model_sig
-                if self.is_malicious and random.random() <= self.args.malicious_activator:
+                if self.is_malicious:
                     continue
                 self._verified_lotter_txs[lotter.idx] = lotter._lotter_tx
             else:
@@ -405,18 +387,23 @@ class Device():
     #             passed_model_sig_tx.append(verified_tx)
     #     self._verified_lotter_txs = passed_model_sig_tx
 
-    def validate_models_and_init_validator_tx(self):
+    def validate_models_and_init_validator_tx(self, idx_to_device):
         
-        def avg_individual_model(models_list, by_how_many):
-            new_models_list = deepcopy(models_list)
-            for idx, model in new_models_list.items():
-                for name, param in model.named_parameters():
-                    param.data.copy_(torch.mul(param, 1/by_how_many))
-            return new_models_list        
+        # def avg_individual_model(models_list, by_how_many):
+        #     new_models_list = deepcopy(models_list)
+        #     for idx, model in new_models_list.items():
+        #         for name, param in model.named_parameters():
+        #             param.data.copy_(torch.mul(param, 1/by_how_many))
+        #     return new_models_list    
         
-        if not self._verified_lotter_txs:
-            # this validator has not received any lotter tx
-            return
+        def exclude_one_model(models_list):
+            exclusion_models_list = {}
+            for idx, model in models_list.items():
+                tmp_models_list = copy(models_list)
+                del tmp_models_list[idx]
+                exclusion_models_list[idx] = fedavg_lotteryfl(list(tmp_models_list.values()), self.args.dev_device)
+            return exclusion_models_list
+        
         # validate model and model_sig sparsity
         lotter_idx_to_model = {}
         for lotter_idx, lotter_tx in self._verified_lotter_txs.items():
@@ -425,51 +412,65 @@ class Device():
             # check lotter_tx['m_m_sig'] by lotter's rsa key, easy, skip
             # validate model spasity
             pruned_amount = round(get_pruned_amount_by_0_weights(lotter_model), 2)
-            if pruned_amount < self.blockchain.get_cur_pruning_diff():
+            if round(pruned_amount, 2) < round(self.blockchain.get_cur_pruning_diff(), 1):
                 # skip model below the current pruning difficulty
                 continue
-            if self.is_malicious and random.random() <= self.args.malicious_activator:
+            if self.is_malicious:
                 # drop legitimate model
                 # even malicious validator cannot pass the model with invalid sparsity because it'll be detected by other validators
                 continue
             # validate model_sig sparsity
-            if not round(get_model_sig_sparsity(self.model, lotter_model_sig), 2) >= (1 - self.blockchain.get_cur_pruning_diff()) * self.args.sig_portion:
-                continue   # or vote -1?? no, hard requirement
+            # if not round(get_model_sig_sparsity(self.model, lotter_model_sig), 2) >= (1 - self.blockchain.get_cur_pruning_diff()) * self.args.sig_portion:
+            #     continue   # or vote -1?? no, hard requirement
             
             lotter_idx_to_model[lotter_idx] = lotter_model
+            
+        if not lotter_idx_to_model:
+            # this validator either has not received any lotter tx, or did not pass the verification of any lotter tx
+            return
         
         # validate model accuracy
-        base_aggr_model = fedavg(list(lotter_idx_to_model.values()), self.args.dev_device)
-        
-        by_how_many = 1 if len(lotter_idx_to_model) == 1 else len(lotter_idx_to_model) - 1
-        
-        lotter_idx_to_weighted_model = avg_individual_model(lotter_idx_to_model, by_how_many)
-        
-        base_aggr_model_acc = test_by_train_data(base_aggr_model,
+        # base_aggr_model = fedavg(list(lotter_idx_to_model.values()), self.args.dev_device)
+        base_aggr_model = fedavg_lotteryfl(list(lotter_idx_to_model.values()), self.args.dev_device)
+        base_aggr_model_acc = test_by_data_set(base_aggr_model,
                                self._train_loader,
                                self.args.dev_device,
-                               self.args.fast_dev_run,
                                self.args.test_verbose)['Accuracy'][0]
-                
+        
+        # by_how_many = 1 if len(lotter_idx_to_model) == 1 else len(lotter_idx_to_model) - 1
+        
+        # lotter_idx_to_weighted_model = avg_individual_model(lotter_idx_to_model, by_how_many)
+        
+        exclusion_models_list = exclude_one_model(lotter_idx_to_model)
+        
         # test each model
         validator_txes = []
-        for lotter_idx in lotter_idx_to_weighted_model:
-            model_divides_copy = copy(lotter_idx_to_weighted_model)
-            del model_divides_copy[lotter_idx]
-            model_vote = 1
-            if model_divides_copy: # if not validator receives only 1 lotter tx
-                averaged_model = fedavg(list(model_divides_copy.values()), self.args.dev_device)
-                this_model_acc = test_by_train_data(averaged_model,
-                                self._train_loader,
-                                self.args.dev_device,
-                                self.args.fast_dev_run,
-                                self.args.test_verbose)['Accuracy'][0]
-                model_vote = 1 if (base_aggr_model_acc - this_model_acc) >= 0 else -1 # added =0 because if n_class so small, in first few rounds the diff could = 0
+        
+        print(f"\nValidator {self.idx} with base model acc {round(base_aggr_model_acc, 2)} and labels {self._user_labels} starts validating models.")
+        
+        for lotter_idx, model in exclusion_models_list.items():
+            this_model_acc = test_by_data_set(model,
+                            self._train_loader,
+                            self.args.dev_device,
+                            self.args.test_verbose)['Accuracy'][0]
             
+            acc_difference = base_aggr_model_acc - this_model_acc
+            # added =0 because if n_class so small, in first few rounds the diff could = 0
+            if acc_difference >= 0:
+                model_vote = 1
+                inc_or_dec = "decreased"
+            else:
+                model_vote = -1
+                inc_or_dec = "increased"
+        
             # disturb vote
-            model_vote *= -1 if self.is_malicious else model_vote
-
-            print(f"Validator {self.idx} votes {lotter_idx}'s model as {model_vote}.")
+            model_vote = model_vote * -1 if self.is_malicious else model_vote
+            
+            if model_vote == -1:
+                print("debug")
+                
+            print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote}.")
+            
             # form validator tx for this lotter tx (and model)
             validator_tx = {
                 '1. validator_idx': self.idx,
@@ -495,7 +496,7 @@ class Device():
             #     continue - it's okay to have it
             for tx in validator._validator_txs:
                 # assume all signatures are verified
-                if self.is_malicious and random.random() <= self.args.malicious_activator:
+                if self.is_malicious:
                     continue
                 if tx['2. lotter_idx'] in self._received_validator_txs:
                     self._received_validator_txs[tx['2. lotter_idx']].append(tx)
@@ -536,7 +537,7 @@ class Device():
                 pos_votes_txes[lotter_idx] = chosen_tx
             else:
                 neg_votes_txes[lotter_idx].extend(corresponding_validators_txes)
-        self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
+        self._final_ticket_model = fedavg_lotteryfl(final_models_to_fedavg, self.args.dev_device)
         self._pos_votes_txes = pos_votes_txes
         self._dup_pos_votes_txes = duplicated_pos_votes_txes
         self._neg_votes_txes = neg_votes_txes
@@ -570,7 +571,7 @@ class Device():
         signature = pow(hash, self.private_key, self.modulus)
         return signature
     
-    def pick_wining_block(self):
+    def pick_wining_block(self, idx_to_device):
         
         def verify_block_sig(block):
             # TODO - complete
@@ -580,20 +581,28 @@ class Device():
             return block.__dict__['block_signature'] == sha256(str(sorted(block_content.items())).encode('utf-8')).hexdigest()
         
         while self._received_blocks:
+            # TODO - check while logic when blocks are not valid
+
             if not sum(self.stake_book.values()):
                 # joined the 1st comm round, pick randomly
                 picked_block = random.choice(self._received_blocks)
                 self._received_blocks.remove(picked_block)
                 if verify_block_sig(picked_block):
+                    winning_validator = picked_block.produced_by
+                    print(f"\n{self.role} {self.idx} {self._user_labels} picks {winning_validator}'s {idx_to_device[winning_validator]._user_labels} block.")
                     return picked_block
             else:
                 self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
                 received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks}
                 for validator, stake in self.stake_book.items():
                     if validator in received_validators_to_blocks:
-                        return received_validators_to_blocks[validator]
-            
-            return None # all validators are in black list, resync chain
+                        picked_block = received_validators_to_blocks[validator]
+                        winning_validator = validator.idx
+                        print(f"\n{self.role} {self.idx} ({self._user_labels}) picks {winning_validator}'s ({idx_to_device[winning_validator]._user_labels}) block.")
+                        return picked_block           
+        
+        print(f"\n{self.idx}'s received blocks are not valud. Resync chain next round.")
+        return None # all validators are in black list, resync chain
         
         
     def append_block(self, winning_block):
@@ -602,7 +611,7 @@ class Device():
         # all blocks do not match previous_hash, resync chain
         return False
         
-    def process_block(self):
+    def process_block(self, comm_round):
         
         def verify_m_sig(global_model, model_sig, n_lotters):
             return True
@@ -656,9 +665,9 @@ class Device():
         
                 
         # validator could be dishonest about n_lotters - if over half of model signatures invalid, meaning high probablility that most of the lotters are dishonest, or the validator dishonest, so this block has to be dropped
-        if len(to_reward_lotters) < int(n_lotters * self.args.block_drop_threshold):
-            self.blockchain.drop_block()
-            return
+        # if len(to_reward_lotters) < int(n_lotters * self.args.block_drop_threshold):
+        #     self.blockchain.drop_block()
+        #     return
                     
         # for unused transactions votes < 0
         # if the above passed, most likely validator is honest about n_lotters, so below we still use n_lotters, shouldn't be a big deal
@@ -686,7 +695,36 @@ class Device():
         # update global ticket model
         self.model = deepcopy(block.global_ticket_model)
         
+        # global_model_accuracy = test_by_data_set(self.model,
+        #                        self._test_loader,
+        #                        self.args.dev_device,
+        #                        self.args.test_verbose)['Accuracy'][0]
+        # wandb.log({f"{self.idx}_global_acc": global_model_accuracy, "comm_round": comm_round})
         
+    def test_accuracy(self, comm_round):
+        global_acc_bm = test_by_data_set(self.model,
+                self.global_test_loader,
+                self.args.dev_device,
+                self.args.test_verbose)['Accuracy'][0]
+        indi_acc_bm = test_by_data_set(self.model,
+                self._test_loader,
+                self.args.dev_device,
+                self.args.test_verbose)['Accuracy'][0]
+        # apply mask to model
+        apply_local_mask(self.model, self._mask)
+        global_acc_am = test_by_data_set(self.model,
+                self.global_test_loader,
+                self.args.dev_device,
+                self.args.test_verbose)['Accuracy'][0]
+        indi_acc_am = test_by_data_set(self.model,
+                self._test_loader,
+                self.args.dev_device,
+                self.args.test_verbose)['Accuracy'][0]
+        
+        print("global_acc_bm", round(global_acc_bm, 2), "indi_acc_bm", round(indi_acc_bm, 2), "global_acc_am", round(global_acc_am, 2), "indi_acc_am", round(indi_acc_am, 2))
+        
+        # wandb.log({"id":self.idx, "global_acc_bm": global_acc_bm, "indi_acc_bm": indi_acc_bm, "global_acc_am": global_acc_am, "indi_acc_am": indi_acc_am})
+    
     def update(self) -> None:
         """
             Interface to Server
@@ -787,10 +825,9 @@ class Device():
         """
             Eval self.model
         """
-        eval_score = test_by_train_data(model,
+        eval_score = test_by_data_set(model,
                                self.test_loader,
                                self.args.dev_device,
-                               self.args.fast_dev_run,
                                self.args.test_verbose)
         self.accuracies.append(eval_score['Accuracy'][0])
         return eval_score

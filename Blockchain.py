@@ -3,12 +3,14 @@ import copy
 from hashlib import sha256
 
 class Blockchain:
-    
-    base_pruning_difficulty = 0.2
 
-    def __init__(self):
+    def __init__(self, base_prunt_difficulty, diff_increase_amount, diff_increase_frequncy, target_pruning_rate):
         self.chain = []
-        self.difficulty_increase_frequency = 2
+        self.base_prunt_difficulty = base_prunt_difficulty
+        self.diff_increase_amount = diff_increase_amount
+        self.difficulty_increase_frequency = diff_increase_frequncy
+        self.target_pruning_rate = target_pruning_rate
+        
   
     def get_chain(self):
         return self.chain
@@ -24,7 +26,7 @@ class Blockchain:
             return None
 
     def get_cur_pruning_diff(self):
-        return (len(self.chain) // self.difficulty_increase_frequency + 1) * self.base_pruning_difficulty
+        return min(self.target_pruning_rate, self.base_prunt_difficulty + (len(self.chain) // self.difficulty_increase_frequency) * self.diff_increase_amount)
 
     def get_last_block_hash(self):
         if len(self.chain) > 0:

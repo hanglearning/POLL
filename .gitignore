@@ -1,5 +1,6 @@
 __pycache__/
-data/
+data/**
+wandb/*
 *.pyc
 .vscode
 .DS_Store
