@@ -13,7 +13,8 @@ from typing import Dict
 import math
 import wandb
 from torch.nn.utils import prune
-from util import get_prune_summary, get_pruned_amount_by_0_weights, l1_prune, get_prune_params, copy_model, fedavg, fedavg_lotteryfl, test_by_data_set, AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params, get_pruned_amount_from_mask, produce_mask_from_model, apply_local_mask, pytorch_make_prune_permanent
+from util import *
+# from util import get_prune_summary, get_pruned_amount_weights, l1_prune, get_prune_params, copy_model, fedavg, fedavg_lotteryfl, test_by_data_set, AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params, get_pruned_amount_from_mask, produce_mask_from_model, apply_local_mask, pytorch_make_prune_permanent
 from util import train as util_train
 from util import test_by_data_set
 
@@ -161,10 +162,11 @@ class Device():
     
     ######## lotters method ########
     
-    def ticket_learning(self):
-        print()
+    def ticket_learning(self, comm_round):
+        # self.apply_local_mask()
         # 1. prune; 2. reinit; 3. train; 4. introduce noice;
-        self.prune()
+        print()
+        self.prune(comm_round)
         self.reinit_params()
         self.train()
         # if malicious, introduce noise
@@ -175,8 +177,8 @@ class Device():
     #     # for new comers - an extra train at the begining
     #     self.train()
         
-    def prune(self):
-        print(f"Lotter {self.idx} is pruning.\nCurrent pruned amount:{get_pruned_amount_by_0_weights(model=self.model):.2%}")
+    def prune(self, comm_round):
+        # comm_round used to debug, will be deleted
         if not self._mask:
             # new lotter
             # warm_mask - train then prune
@@ -186,9 +188,10 @@ class Device():
         else:
             # apply local mask to global model weights
             apply_local_mask(self.model, self._mask)
-        already_pruned_amount = get_pruned_amount_by_0_weights(model=self.model)
-        curr_diff_increiculty = self.blockchain.get_cur_pruning_diff()
-        amount_to_prune = max(already_pruned_amount, curr_diff_increiculty)
+        print(f"Lotter {self.idx} is pruning.\nCurrent pruned amount:{get_pruned_amount_weights(model=self.model):.2%}")
+        already_pruned_amount = get_pruned_amount_weights(model=self.model)
+        curr_prune_diff = self.blockchain.get_cur_pruning_diff()
+        amount_to_prune = max(already_pruned_amount, curr_prune_diff)
         
         if amount_to_prune:
             l1_prune(model=self.model,
@@ -197,7 +200,7 @@ class Device():
                     verbose=self.args.prune_verbose)
             
         if not self.args.prune_verbose:
-            print(f"After prunign, pruned amount:{get_pruned_amount_by_0_weights(model=self.model):.2%}")
+            print(f"After pruning, pruned amount:{get_pruned_amount_by_mask(self.model):.2%}")
             
         # update local mask
         for layer, module in self.model.named_children():
@@ -206,9 +209,12 @@ class Device():
                     self._mask[layer] = mask
                         
     def reinit_params(self):
+        if self.blockchain.get_cur_pruning_diff() == 0:
+            # during mask warming (first few rounds)
+            return
         source_params = dict(self.init_global_model.named_parameters())
         for name, param in self.model.named_parameters():
-            param.data.copy_(source_params[name].data)
+            param.data.copy_(source_params[name.split("_")[0]].data)
         print(f"Lotter {self.idx} has reinitialized its parameters.")
             
     def train(self):
@@ -397,6 +403,8 @@ class Device():
         #     return new_models_list    
         
         def exclude_one_model(models_list):
+            if len(models_list) == 1:
+                return models_list
             exclusion_models_list = {}
             for idx, model in models_list.items():
                 tmp_models_list = copy(models_list)
@@ -411,7 +419,7 @@ class Device():
             lotter_model_sig = lotter_tx['m_sig']
             # check lotter_tx['m_m_sig'] by lotter's rsa key, easy, skip
             # validate model spasity
-            pruned_amount = round(get_pruned_amount_by_0_weights(lotter_model), 2)
+            pruned_amount = round(get_pruned_amount_weights(lotter_model), 2)
             if round(pruned_amount, 2) < round(self.blockchain.get_cur_pruning_diff(), 1):
                 # skip model below the current pruning difficulty
                 continue
@@ -465,9 +473,6 @@ class Device():
         
             # disturb vote
             model_vote = model_vote * -1 if self.is_malicious else model_vote
-            
-            if model_vote == -1:
-                print("debug")
                 
             print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote}.")
             
@@ -597,7 +602,7 @@ class Device():
                 for validator, stake in self.stake_book.items():
                     if validator in received_validators_to_blocks:
                         picked_block = received_validators_to_blocks[validator]
-                        winning_validator = validator.idx
+                        winning_validator = validator
                         print(f"\n{self.role} {self.idx} ({self._user_labels}) picks {winning_validator}'s ({idx_to_device[winning_validator]._user_labels}) block.")
                         return picked_block           
         

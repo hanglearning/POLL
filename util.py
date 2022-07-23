@@ -153,6 +153,10 @@ def apply_local_mask(model, mask):
                 weight_params.data.copy_(torch.tensor(np.multiply(weight_params.data, mask[layer])))
 
 
+def create_model_no_prune(cls, device='cuda:0') -> nn.Module:
+    model = cls().to(device)
+    return model
+
 def create_model(cls, device='cuda:0') -> nn.Module:
     """
         Returns new model pruned by 0.00 %. This is necessary to create buffer masks
@@ -166,7 +170,7 @@ def copy_model(model: nn.Module, device='cuda:0'):
         Returns a copy of the input model.
         Note: the model should have been pruned for this method to work to create buffer masks and whatnot.
     """
-    new_model = create_model(model.__class__, device)
+    new_model = create_model_no_prune(model.__class__, device)
     source_params = dict(model.named_parameters())
     source_buffer = dict(model.named_buffers())
     for name, param in new_model.named_parameters():
@@ -273,16 +277,17 @@ def test_by_data_set(
     return outputs
 
 
-def get_pruned_amount_by_0_weights(model):
+def get_pruned_amount_weights(model):
     total_params_count = get_num_total_model_params(model)
     total_0_count = 0
     for layer, module in model.named_children():
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
                 total_0_count += len(list(zip(*np.where(weight_params == 0))))
+                total_0_count += len(torch.nonzero(torch.isnan(weight_params.view(-1))))
     return total_0_count / total_params_count
 
-def get_pruned_amount_from_mask(model):
+def get_pruned_amount_by_mask(model):
     total_params_count = get_num_total_model_params(model)
     total_0_count = 0
     for layer, module in model.named_children():
@@ -317,12 +322,13 @@ def generate_mask_from_0_weights(model):
         
 def pytorch_make_prune_permanent(model):
     params_pruned = get_prune_params(model, name='weight')
-    for param, name in params_pruned:
-        prune.remove(param, name)
+    try:
+        for param, name in params_pruned:
+            prune.remove(param, name)
+    except:
+        # if an unpruned model is passed into this function, ignore
+        pass
     return model
-
-def get_pruned_amount_by_mask():
-    pass
 
 
 

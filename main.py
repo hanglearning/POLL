@@ -10,7 +10,7 @@ from model.cifar10.mlp import MLP as CIFAR_MLP
 from model.mnist.cnn import CNN as MNIST_CNN
 from model.mnist.mlp import MLP as MNIST_MLP
 from device import Device
-from util import create_model
+from util import *
 import wandb
 from dataset.datasource import DataLoaders
 from torchmetrics import MetricCollection, Accuracy, Precision, Recall
@@ -54,7 +54,7 @@ parser.add_argument('--dataset_mode', type=str,default='non-iid', help='non-iid|
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
 parser.add_argument('--num_workers', type=int, default=0)
 # above for DataLoaders
-parser.add_argument('--comm_rounds', type=int, default=20)
+parser.add_argument('--comm_rounds', type=int, default=40)
 parser.add_argument('--frac_devices_per_round', type=float, default=1.0)
 parser.add_argument('--epochs', type=int, default=10)
 parser.add_argument('--batch_size', type=int, default=32)
@@ -68,7 +68,7 @@ parser.add_argument('--noise_variance', type=int, default=1, help="noise varianc
 
 ####################### blockchained pruning setting #######################
 parser.add_argument('--target_spar', type=float, default=0.8)
-parser.add_argument('--diff_base', type=float, default=0.0, help='pruning difficulty in comm round 1')
+parser.add_argument('--diff_base', type=float, default=0.0, help='start pruning difficulty')
 parser.add_argument('--diff_incre', type=float, default=0.2, help='increment of difficulty every diff_freq')
 parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increased by diff_incre every diff_freq rounds')
 
@@ -107,7 +107,7 @@ def main():
     wandb.config.update(args)
     
     ######## initiate devices ########
-    init_global_model = create_model(cls=models[args.dataset]
+    init_global_model = create_model_no_prune(cls=models[args.dataset]
                          [args.arch], device=args.dev_device)
     
     train_loaders, test_loaders, user_labels, global_test_loader = DataLoaders(n_devices=args.n_devices,
@@ -181,7 +181,7 @@ def main():
             if lotter.resync_chain(comm_round, idx_to_device, online_devices_list):
                 lotter.post_resync()
             # perform regular ticket learning
-            lotter.ticket_learning()
+            lotter.ticket_learning(comm_round)
             # create model signature
             # lotter.create_model_sig()
             # make tx
