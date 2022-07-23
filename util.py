@@ -277,7 +277,7 @@ def test_by_data_set(
     return outputs
 
 
-def get_pruned_amount_weights(model):
+def get_pruned_amount_by_weights(model):
     total_params_count = get_num_total_model_params(model)
     total_0_count = 0
     for layer, module in model.named_children():

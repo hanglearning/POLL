@@ -134,7 +134,7 @@ def main():
     ######## Fed-POLL ########
     for comm_round in range(1, args.comm_rounds + 1):
         
-        pruning_diff = min(args.target_spar, args.diff_base + (comm_round - 1) // args.diff_freq * args.diff_incre)
+        pruning_diff = round(min(args.target_spar, args.diff_base + (comm_round - 1) // args.diff_freq * args.diff_incre), 2)
         text = f'Comm Round {comm_round}, Pruning Diff {pruning_diff}'
         print(f"{len(text) * '='}\n{text}\n{len(text) * '='}")
         
@@ -226,7 +226,10 @@ def main():
                 continue
             # process block
             device.process_block(comm_round)
+            print("just append", device.idx, get_pruned_amount_by_weights(device.model))
             device.test_accuracy(comm_round)
+            print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
+            print(f"Length: {device.blockchain.get_chain_length()}")
         
 
 if __name__ == "__main__":

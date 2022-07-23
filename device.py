@@ -14,7 +14,7 @@ import math
 import wandb
 from torch.nn.utils import prune
 from util import *
-# from util import get_prune_summary, get_pruned_amount_weights, l1_prune, get_prune_params, copy_model, fedavg, fedavg_lotteryfl, test_by_data_set, AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params, get_pruned_amount_from_mask, produce_mask_from_model, apply_local_mask, pytorch_make_prune_permanent
+# from util import get_prune_summary, get_pruned_amount_by_weights, l1_prune, get_prune_params, copy_model, fedavg, fedavg_lotteryfl, test_by_data_set, AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params, get_pruned_amount_from_mask, produce_mask_from_model, apply_local_mask, pytorch_make_prune_permanent
 from util import train as util_train
 from util import test_by_data_set
 
@@ -188,8 +188,8 @@ class Device():
         else:
             # apply local mask to global model weights
             apply_local_mask(self.model, self._mask)
-        print(f"Lotter {self.idx} is pruning.\nCurrent pruned amount:{get_pruned_amount_weights(model=self.model):.2%}")
-        already_pruned_amount = get_pruned_amount_weights(model=self.model)
+        print(f"Lotter {self.idx} is pruning.\nCurrent pruned amount:{get_pruned_amount_by_weights(model=self.model):.2%}")
+        already_pruned_amount = get_pruned_amount_by_weights(model=self.model)
         curr_prune_diff = self.blockchain.get_cur_pruning_diff()
         amount_to_prune = min(self.blockchain.target_pruning_rate, max(already_pruned_amount, curr_prune_diff))
         
@@ -421,7 +421,7 @@ class Device():
             lotter_model_sig = lotter_tx['m_sig']
             # check lotter_tx['m_m_sig'] by lotter's rsa key, easy, skip
             # validate model spasity
-            pruned_amount = round(get_pruned_amount_weights(lotter_model), 2)
+            pruned_amount = round(get_pruned_amount_by_weights(lotter_model), 2)
             if round(pruned_amount, 2) < round(self.blockchain.get_cur_pruning_diff(), 1):
                 # skip model below the current pruning difficulty
                 continue
