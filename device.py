@@ -191,7 +191,9 @@ class Device():
         print(f"Lotter {self.idx} is pruning.\nCurrent pruned amount:{get_pruned_amount_weights(model=self.model):.2%}")
         already_pruned_amount = get_pruned_amount_weights(model=self.model)
         curr_prune_diff = self.blockchain.get_cur_pruning_diff()
-        amount_to_prune = max(already_pruned_amount, curr_prune_diff)
+        amount_to_prune = min(self.blockchain.target_pruning_rate, max(already_pruned_amount, curr_prune_diff))
+        
+        print(f"Amount to prune: {amount_to_prune}")
         
         if amount_to_prune:
             l1_prune(model=self.model,
