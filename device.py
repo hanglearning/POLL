@@ -185,7 +185,7 @@ class Device():
             # vs directly prune
             # pass
         else:
-            # apply local mask to global model weights
+            # apply local mask to global model weights (do not generate mask object)
             apply_local_mask(self.model, self._mask)
             
         already_pruned_amount = get_pruned_amount_by_weights(model=self.model)

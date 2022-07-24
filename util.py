@@ -134,11 +134,11 @@ def fedavg_lotteryfl(models, device):
     layer_to_weight_sum = {}
     for model in models:
         for name, param in model.named_parameters():
-            layer_to_weight_sum[name.split('_')[0]] = layer_to_mask_sum.get(name, torch.zeros_like(param)) + param
+            layer_to_weight_sum[name.split('_')[0]] = layer_to_weight_sum.get(name, torch.zeros_like(param)) + param
     # divide
     for name, param in aggr_model.named_parameters():
         if 'weight' in name:
-            # TODO - divide by 0 becomes nan, use torch.nan_to_nu
+            # divide by 0 becomes nan, need to replace by 0
             param.data.copy_(torch.nan_to_num(layer_to_weight_sum[name] / layer_to_mask_sum[name.split('.')[0]]))
         else:
             param.data.copy_(layer_to_weight_sum[name])
