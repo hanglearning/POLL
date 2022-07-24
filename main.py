@@ -226,7 +226,7 @@ def main():
                 continue
             # process block
             device.process_block(comm_round)
-            print("just append with pruned amount" get_pruned_amount_by_weights(device.model))
+            print("just append with pruned amount", get_pruned_amount_by_weights(device.model))
             # device.test_accuracy(comm_round)
             # print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
             print(f"Length: {device.blockchain.get_chain_length()}")
