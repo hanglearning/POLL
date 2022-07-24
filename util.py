@@ -128,6 +128,8 @@ def fedavg_lotteryfl(models, device):
             for name, mask in module.named_buffers():
                 if 'mask' in name:
                     layer_to_mask_sum[layer] = layer_to_mask_sum.get(layer, torch.zeros_like(mask)) + mask
+        # revoke mask
+        pytorch_make_prune_permanent(model)
     # sum all weight values
     layer_to_weight_sum = {}
     for model in models:
@@ -136,8 +138,8 @@ def fedavg_lotteryfl(models, device):
     # divide
     for name, param in aggr_model.named_parameters():
         if 'weight' in name:
-            # TODO - might have divide by 0 bug
-            param.data.copy_(layer_to_weight_sum[name] / layer_to_mask_sum[name.split('.')[0]])
+            # TODO - divide by 0 becomes nan, use torch.nan_to_nu
+            param.data.copy_(torch.nan_to_num(layer_to_weight_sum[name] / layer_to_mask_sum[name.split('.')[0]]))
         else:
             param.data.copy_(layer_to_weight_sum[name])
     return aggr_model
@@ -280,11 +282,14 @@ def test_by_data_set(
 def get_pruned_amount_by_weights(model):
     total_params_count = get_num_total_model_params(model)
     total_0_count = 0
+    total_nan_count = 0
     for layer, module in model.named_children():
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
                 total_0_count += len(list(zip(*np.where(weight_params == 0))))
-                total_0_count += len(torch.nonzero(torch.isnan(weight_params.view(-1))))
+                total_nan_count += len(torch.nonzero(torch.isnan(weight_params.view(-1))))
+    if total_nan_count > 0:
+        sys.exit("nan bug")
     return total_0_count / total_params_count
 
 def get_pruned_amount_by_mask(model):

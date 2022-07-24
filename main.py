@@ -166,12 +166,12 @@ def main():
         for validator in online_validators:
             validator._associated_lotters = set()
             validator._verified_lotter_txs = {}
-            validator._neg_votes_txes = {}
+            validator._neg_voted_txes = {}
             validator._received_validator_txs = {}
             validator._verified_validator_txs = set()
             validator._final_ticket_model = None
             #validator._final_models_signatures = set()
-            #validator._dup_pos_votes_txes = {}
+            #validator._dup_pos_voted_txes = {}
             
         ''' device starts Fed-POLL '''
         ### lotter starts learning and pruning ###
@@ -227,8 +227,8 @@ def main():
             # process block
             device.process_block(comm_round)
             print("just append", device.idx, get_pruned_amount_by_weights(device.model))
-            device.test_accuracy(comm_round)
-            print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
+            # device.test_accuracy(comm_round)
+            # print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
             print(f"Length: {device.blockchain.get_chain_length()}")
         
 

@@ -3,12 +3,12 @@ import json
 from hashlib import sha256
 
 class Block:
-    def __init__(self, previous_block_hash, global_ticket_model, pos_votes_txes, dup_pos_votes_txes, neg_votes_txes, participating_validators, produced_by, validator_rsa_pub_key):
+    def __init__(self, previous_block_hash, global_ticket_model, pos_voted_txes, dup_pos_voted_txes, neg_voted_txes, participating_validators, produced_by, validator_rsa_pub_key):
         self.previous_block_hash = previous_block_hash
         self.global_ticket_model = global_ticket_model
-        self.pos_votes_txes = pos_votes_txes
-        self.dup_pos_votes_txes = dup_pos_votes_txes
-        self.neg_votes_txes = neg_votes_txes
+        self.pos_voted_txes = pos_voted_txes
+        self.dup_pos_voted_txes = dup_pos_voted_txes
+        self.neg_voted_txes = neg_voted_txes
         self.participating_validators = participating_validators
         # validator specific
         self.produced_by = produced_by
