@@ -102,7 +102,7 @@ def main():
     
     ######## setup wandb ########
     wandb.login()
-    wandb.init(project="POLL_dummy", entity=args.wandb_username)
+    wandb.init(project="POLL_ver_1", entity=args.wandb_username)
     wandb.run.name = datetime.now().strftime("%m%d%Y_%H%M%S")
     wandb.run.save()
     wandb.config.update(args)
@@ -214,6 +214,7 @@ def main():
             validator.broadcast_block(online_devices_list, block)
             
         ### all devices process received blocks ###
+        global_acc_bms, indi_acc_bms, global_acc_ams, indi_acc_ams = [], [], [], []
         for device in online_devices_list:
             # pick winning block based on PoS
             winning_block = device.pick_wining_block(idx_to_device)
@@ -228,10 +229,20 @@ def main():
             # process block
             device.process_block(comm_round)
             # print("just append with pruned amount", get_pruned_amount_by_weights(device.model))
-            device.test_accuracy(comm_round)
+            global_acc_bm, indi_acc_bm, global_acc_am, indi_acc_am = device.test_accuracy(comm_round)
+            global_acc_bms.apeend(global_acc_bm)
+            indi_acc_bms.append(indi_acc_bm) 
+            global_acc_ams.append(global_acc_am)
+            indi_acc_ams.append(indi_acc_am)
             # print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
             # print(f"Length: {device.blockchain.get_chain_length()}")
         
+        avg_global_acc_bm = np.mean(global_acc_bms, axis=0, dtype=np.float32)
+        avg_indi_acc_bm = np.mean(indi_acc_bms, axis=0, dtype=np.float32)
+        avg_global_acc_am = np.mean(global_acc_ams, axis=0, dtype=np.float32)
+        avg_indi_acc_am = np.mean(indi_acc_ams, axis=0, dtype=np.float32)
+        
+        wandb.log({"comm_round": comm_round, "pruning_diff": pruning_diff, "avg_global_acc_bm": round(avg_global_acc_bm, 2), "avg_indi_acc_bm": round(avg_indi_acc_bm, 2), "avg_global_acc_am": round(avg_global_acc_am, 2), "avg_indi_acc_am": round(avg_indi_acc_am, 2)})
 
 if __name__ == "__main__":
     main()
