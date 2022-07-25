@@ -186,6 +186,7 @@ class Device():
             # pass
         else:
             # apply local mask to global model weights (do not generate mask object)
+            print(f"Lotter {self.idx} before applying mask, pruned amount: {get_pruned_amount_by_weights(model=self.model):.2%}")
             apply_local_mask(self.model, self._mask)
             
         already_pruned_amount = get_pruned_amount_by_weights(model=self.model)
