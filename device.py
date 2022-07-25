@@ -181,9 +181,11 @@ class Device():
         if not self._mask:
             # new lotter
             # warm_mask - an extra train before prune
-            self.warm_mask()
-            # vs directly prune
-            # pass
+            if self.args.warm_mask:
+                self.warm_mask()
+            else:
+                # vs directly prune
+                pass
         else:
             # apply local mask to global model weights (do not generate mask object)
             # print(f"Lotter {self.idx} before applying mask, pruned amount: {get_pruned_amount_by_weights(model=self.model):.2%}")

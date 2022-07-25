@@ -60,7 +60,7 @@ parser.add_argument('--epochs', type=int, default=10)
 parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--n_samples', type=int, default=20)
-parser.add_argument('--n_class', type=int, default=3)
+parser.add_argument('--n_class', type=int, default=2)
 parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
 parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
 
@@ -71,6 +71,7 @@ parser.add_argument('--target_spar', type=float, default=0.8)
 parser.add_argument('--diff_base', type=float, default=0.0, help='start pruning difficulty')
 parser.add_argument('--diff_incre', type=float, default=0.2, help='increment of difficulty every diff_freq')
 parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increased by diff_incre every diff_freq rounds')
+parser.add_argument('--warm_mask', type=int, default=1, help='warm mask as a new comer')
 
 ####################### blockchain setting #######################
 parser.add_argument('--n_devices', type=int, default=6)
