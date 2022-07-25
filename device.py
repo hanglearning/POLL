@@ -186,7 +186,7 @@ class Device():
             # pass
         else:
             # apply local mask to global model weights (do not generate mask object)
-            print(f"Lotter {self.idx} before applying mask, pruned amount: {get_pruned_amount_by_weights(model=self.model):.2%}")
+            # print(f"Lotter {self.idx} before applying mask, pruned amount: {get_pruned_amount_by_weights(model=self.model):.2%}")
             apply_local_mask(self.model, self._mask)
             
         already_pruned_amount = get_pruned_amount_by_weights(model=self.model)
@@ -551,8 +551,8 @@ class Device():
             else:
                 neg_voted_txes[lotter_idx].extend(corresponding_validators_txes)
         self._final_ticket_model = fedavg_lotteryfl(final_models_to_fedavg, self.args.dev_device)
-        print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
-        print()
+        # print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
+        # print()
         self._pos_voted_txes = pos_voted_txes
         self._dup_pos_voted_txes = duplicated_pos_voted_txes
         self._neg_voted_txes = neg_voted_txes
