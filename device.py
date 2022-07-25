@@ -729,17 +729,18 @@ class Device():
                 self.args.dev_device,
                 self.args.test_verbose)['Accuracy'][0]
         # apply mask to model
-        apply_local_mask(self.model, self._mask)
-        global_acc_am = test_by_data_set(self.model,
+        temp_model = deepcopy(self.model)
+        apply_local_mask(temp_model, self._mask)
+        global_acc_am = test_by_data_set(temp_model,
                 self.global_test_loader,
                 self.args.dev_device,
                 self.args.test_verbose)['Accuracy'][0]
-        indi_acc_am = test_by_data_set(self.model,
+        indi_acc_am = test_by_data_set(temp_model,
                 self._test_loader,
                 self.args.dev_device,
                 self.args.test_verbose)['Accuracy'][0]
         
-        print("global_acc_bm", round(global_acc_bm, 2), "indi_acc_bm", round(indi_acc_bm, 2), "global_acc_am", round(global_acc_am, 2), "indi_acc_am", round(indi_acc_am, 2))
+        print("global_acc_bm", round(global_acc_bm, 2), "indi_acc_bm", round(indi_acc_bm, 2), "\nglobal_acc_am", round(global_acc_am, 2), "indi_acc_am", round(indi_acc_am, 2))
         
         # wandb.log({"id":self.idx, "global_acc_bm": global_acc_bm, "indi_acc_bm": indi_acc_bm, "global_acc_am": global_acc_am, "indi_acc_am": indi_acc_am})
     
