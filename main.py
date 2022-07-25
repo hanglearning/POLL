@@ -54,7 +54,7 @@ parser.add_argument('--dataset_mode', type=str,default='non-iid', help='non-iid|
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
 parser.add_argument('--num_workers', type=int, default=0)
 # above for DataLoaders
-parser.add_argument('--comm_rounds', type=int, default=40)
+parser.add_argument('--comm_rounds', type=int, default=20)
 parser.add_argument('--frac_devices_per_round', type=float, default=1.0)
 parser.add_argument('--epochs', type=int, default=10)
 parser.add_argument('--batch_size', type=int, default=32)
@@ -230,7 +230,7 @@ def main():
             device.process_block(comm_round)
             # print("just append with pruned amount", get_pruned_amount_by_weights(device.model))
             global_acc_bm, indi_acc_bm, global_acc_am, indi_acc_am = device.test_accuracy(comm_round)
-            global_acc_bms.apeend(global_acc_bm)
+            global_acc_bms.append(global_acc_bm)
             indi_acc_bms.append(indi_acc_bm) 
             global_acc_ams.append(global_acc_am)
             indi_acc_ams.append(indi_acc_am)
