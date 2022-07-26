@@ -151,6 +151,8 @@ def main():
         text = f'Comm Round {comm_round}, Pruning Diff {pruning_diff}'
         print(f"{len(text) * '='}\n{text}\n{len(text) * '='}")
         
+        wandb.log({"comm_round": comm_round, "pruning_diff": pruning_diff})
+        
         ''' device assign roles '''
         if args.n_lotters == '*':
             n_lotters = random.randint(0, args.n_devices - 1)

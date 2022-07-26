@@ -748,9 +748,9 @@ class Device():
                 self.args.dev_device,
                 self.args.test_verbose)['Accuracy'][0]
         
-        print("global_acc_bm", round(global_acc_bm, 2), "indi_acc_bm", round(indi_acc_bm, 2), "\nglobal_acc_am", round(global_acc_am, 2), "indi_acc_am", round(indi_acc_am, 2))
+        print("\n", self.role, self.idx,"\nglobal_acc_bm", round(global_acc_bm, 2), "indi_acc_bm", round(indi_acc_bm, 2), "\nglobal_acc_am", round(global_acc_am, 2), "indi_acc_am", round(indi_acc_am, 2))
         
-        wandb.log({"comm_round": comm_round, f"{self.idx}_global_acc_bm": round(global_acc_bm, 2), f"{self.idx}_indi_acc_bm": round(indi_acc_bm, 2), f"{self.idx}_global_acc_am": round(global_acc_am, 2), f"{self.idx}_indi_acc_am": round(indi_acc_am, 2)})
+        # wandb.log({"comm_round": comm_round, f"{self.idx}_global_acc_bm": round(global_acc_bm, 2), f"{self.idx}_indi_acc_bm": round(indi_acc_bm, 2), f"{self.idx}_global_acc_am": round(global_acc_am, 2), f"{self.idx}_indi_acc_am": round(indi_acc_am, 2)})
         
         return global_acc_bm, indi_acc_bm, global_acc_am, indi_acc_am
         
