@@ -98,7 +98,7 @@ def produce_mask_from_model(model):
     for layer, module in model.named_children():
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
-                layer_to_masked_positions[layer] = list(zip(*np.where(weight_params.cpu() == 0)))
+                layer_to_masked_positions[layer] = list(zip(*np.where(weight_params == 0)))
         
     for layer, module in model.named_children():
         for name, mask in module.named_buffers():
@@ -152,7 +152,7 @@ def apply_local_mask(model, mask):
     for layer, module in model.named_children():
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
-                weight_params.data.copy_(torch.tensor(np.multiply(weight_params.cpu().data, mask[layer])))
+                weight_params.data.copy_(torch.tensor(np.multiply(weight_params.data, mask[layer])))
 
 
 def create_model_no_prune(cls, device='cuda:0') -> nn.Module:
@@ -286,7 +286,7 @@ def get_pruned_amount_by_weights(model):
     for layer, module in model.named_children():
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
-                total_0_count += len(list(zip(*np.where(weight_params.cpu() == 0))))
+                total_0_count += len(list(zip(*np.where(weight_params == 0))))
                 total_nan_count += len(torch.nonzero(torch.isnan(weight_params.view(-1))))
     if total_nan_count > 0:
         sys.exit("nan bug")
@@ -298,7 +298,7 @@ def get_pruned_amount_by_mask(model):
     for layer, module in model.named_children():
         for name, mask in module.named_buffers():
             if 'mask' in name:
-                total_0_count += len(list(zip(*np.where(mask.cpu() == 0))))
+                total_0_count += len(list(zip(*np.where(mask == 0))))
     return total_0_count / total_params_count
 
     
