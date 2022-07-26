@@ -133,17 +133,6 @@ def main():
     for device in devices_list:
         device.assign_peers(idx_to_device)
     
-    # wandb log accuracies
-    accuracy_types = ["global_acc_bm", "indi_acc_bm", "global_acc_am", "indi_acc_am"]
-    
-    # index of the accuracies list corresponds to device.idx - 1
-    for acc_name in accuracy_types:
-        vars()[f"{acc_name}_device_accuracies"] = [[] for _ in range(len(devices_list))]
-    # global_acc_bm_device_accuracies = [[] for _ in range(len(devices_list))]
-    # indi_acc_bm_device_accuracies = [[] for _ in range(len(devices_list))]
-    # global_acc_am_device_accuracies = [[] for _ in range(len(devices_list))]
-    # indi_acc_am_device_accuracies = [[] for _ in range(len(devices_list))]
-    
     ######## Fed-POLL ########
     for comm_round in range(1, args.comm_rounds + 1):
         
@@ -245,33 +234,12 @@ def main():
         
         ### all devices test latest models ###
         for device in devices_list:
-            global_acc_bm, indi_acc_bm, global_acc_am, indi_acc_am = device.test_accuracy(comm_round)
-            for acc_name in accuracy_types:
-                vars()[f"{acc_name}_device_accuracies"][device.idx - 1].append(vars()[acc_name])
-            # global_acc_bm_device_accuracies[device.idx - 1].append(global_acc_bm)
-            # indi_acc_bm_device_accuracies[device.idx - 1].append(indi_acc_bm) 
-            # global_acc_am_device_accuracies[device.idx - 1].append(global_acc_am)
-            # indi_acc_am_device_accuracies[device.idx - 1].append(indi_acc_am)
+            device.test_accuracy(comm_round)
             
             # print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
             # print(f"Length: {device.blockchain.get_chain_length()}")
         
-        # avg_global_acc_bm = np.mean(global_acc_bms, axis=0, dtype=np.float32)
-        # avg_indi_acc_bm = np.mean(indi_acc_bms, axis=0, dtype=np.float32)
-        # avg_global_acc_am = np.mean(global_acc_ams, axis=0, dtype=np.float32)
-        # avg_indi_acc_am = np.mean(indi_acc_ams, axis=0, dtype=np.float32)
         
-        # wandb.log({"comm_round": comm_round, "pruning_diff": pruning_diff, "avg_global_acc_bm": round(avg_global_acc_bm, 2), "avg_indi_acc_bm": round(avg_indi_acc_bm, 2), "avg_global_acc_am": round(avg_global_acc_am, 2), "avg_indi_acc_am": round(avg_indi_acc_am, 2)})
-    
-    # log wandb
-    for plot_name in accuracy_types:
-        print(f"logging {plot_name}...")
-        wandb.log({plot_name : wandb.plot.line_series(
-        xs=list(range(1, comm_round + 1)), 
-        ys=vars()[f"{plot_name}_device_accuracies"],
-        keys=[f"device_{i}" for i in range(1, len(devices_list)+1)],
-        title=plot_name,
-        xname="Comm Rounds")})
 
 if __name__ == "__main__":
     main()
