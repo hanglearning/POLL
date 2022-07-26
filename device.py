@@ -229,7 +229,8 @@ class Device():
                 param.data.copy_(source_params[name.split("_")[0]].data)
             print(f"Lotter {self.idx} has reinitialized its parameters.")
             self._reinit = False
-        print(f"Lotter {self.idx} did NOT reinitialize its parameters.")
+        else:
+            print(f"Lotter {self.idx} did NOT reinitialize its parameters.")
             
     def train(self):
         print(f"Lotter {self.idx} with labels {self._user_labels} is training for {self.args.epochs} epochs...")
