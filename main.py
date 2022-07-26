@@ -265,6 +265,7 @@ def main():
     
     # log wandb
     for plot_name in accuracy_types:
+        print(f"logging {plot_name}...")
         wandb.log({plot_name : wandb.plot.line_series(
         xs=list(range(1, comm_round + 1)), 
         ys=vars()[f"{plot_name}_device_accuracies"],
