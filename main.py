@@ -105,7 +105,6 @@ def main():
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
     wandb.run.name = datetime.now().strftime("%m%d%Y_%H%M%S")
-    wandb.run.save()
     wandb.config.update(args)
     
     ######## initiate devices ########
