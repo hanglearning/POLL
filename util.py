@@ -152,7 +152,7 @@ def apply_local_mask(model, mask):
     for layer, module in model.named_children():
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
-                weight_params.data.copy_(torch.tensor(np.multiply(weight_params.data, mask[layer])))
+                weight_params.data.copy_(torch.tensor(np.multiply(weight_params.cpu().data, mask[layer])))
 
 
 def create_model_no_prune(cls, device='cuda:0') -> nn.Module:
