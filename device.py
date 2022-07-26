@@ -218,8 +218,10 @@ class Device():
                     self._mask[layer] = mask
                         
     def reinit_params(self):
-        if self.blockchain.get_cur_pruning_diff() == 0:
-            # during mask warming (first few rounds)
+        # do not reinit if sparcity satisfies the current pruning difficulty
+        # most likely happen during rounds that pruning difficulty stays
+        if get_pruned_amount_by_mask(self.model) >= self.blockchain.get_cur_pruning_diff():
+            print("Do not reinit.")
             return
         source_params = dict(self.init_global_model.named_parameters())
         for name, param in self.model.named_parameters():
