@@ -45,6 +45,7 @@ class Device():
         self.args = args
         # ticket learning variables
         self._mask = {}
+        self._reinit = False
         self._train_loader = train_loader
         self._test_loader = test_loader
         self._user_labels = user_labels
@@ -196,6 +197,9 @@ class Device():
         curr_prune_diff = self.blockchain.get_cur_pruning_diff()
         amount_to_prune = min(self.blockchain.target_pruning_rate, max(already_pruned_amount, curr_prune_diff))
         
+        if amount_to_prune > already_pruned_amount:
+            self._reinit = True
+        
         print(f"Amount to prune: {amount_to_prune}")
         
         if amount_to_prune:
@@ -218,15 +222,14 @@ class Device():
                     self._mask[layer] = mask
                         
     def reinit_params(self):
-        # do not reinit if sparcity satisfies the current pruning difficulty
-        # most likely happen during rounds that pruning difficulty stays
-        if get_pruned_amount_by_mask(self.model) >= self.blockchain.get_cur_pruning_diff():
-            print("Do not reinit.")
-            return
-        source_params = dict(self.init_global_model.named_parameters())
-        for name, param in self.model.named_parameters():
-            param.data.copy_(source_params[name.split("_")[0]].data)
-        print(f"Lotter {self.idx} has reinitialized its parameters.")
+        # reinit only if a device had pruned more weights off
+        if self._reinit:
+            source_params = dict(self.init_global_model.named_parameters())
+            for name, param in self.model.named_parameters():
+                param.data.copy_(source_params[name.split("_")[0]].data)
+            print(f"Lotter {self.idx} has reinitialized its parameters.")
+            self._reinit = False
+        print(f"Lotter {self.idx} did NOT reinitialize its parameters.")
             
     def train(self):
         print(f"Lotter {self.idx} with labels {self._user_labels} is training for {self.args.epochs} epochs...")

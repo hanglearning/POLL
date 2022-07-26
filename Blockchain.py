@@ -26,7 +26,7 @@ class Blockchain:
             return None
 
     def get_cur_pruning_diff(self):
-        return min(self.target_pruning_rate, self.base_prunt_difficulty + (len(self.chain) // self.difficulty_increase_frequency) * self.diff_increase_amount)
+        return round(min(self.target_pruning_rate, self.base_prunt_difficulty + (len(self.chain) // self.difficulty_increase_frequency) * self.diff_increase_amount), 2)
 
     def get_last_block_hash(self):
         if len(self.chain) > 0:

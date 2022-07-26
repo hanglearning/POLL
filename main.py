@@ -45,6 +45,7 @@ parser.add_argument('--prune_verbose', type=bool, default=False)
 parser.add_argument('--resync_verbose', type=bool, default=True)
 parser.add_argument('--seed', type=int, default=40)
 parser.add_argument('--wandb_username', type=str, default=None)
+parser.add_argument('--wandb_project', type=str, default=None)
 
 ####################### federated learning setting #######################
 parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="cifar10")
@@ -102,7 +103,7 @@ def main():
     
     ######## setup wandb ########
     wandb.login()
-    wandb.init(project="POLL_ver_1", entity=args.wandb_username)
+    wandb.init(project=args.wandb_project, entity=args.wandb_username)
     wandb.run.name = datetime.now().strftime("%m%d%Y_%H%M%S")
     wandb.run.save()
     wandb.config.update(args)
