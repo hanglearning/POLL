@@ -136,7 +136,7 @@ def main():
     # wandb log accuracies
     accuracy_types = ["global_acc_bm", "indi_acc_bm", "global_acc_am", "indi_acc_am"]
     
-    # index of the accuracies list corresponds to device._idx - 1
+    # index of the accuracies list corresponds to device.idx - 1
     for acc_name in accuracy_types:
         vars()[f"{acc_name}_device_accuracies"] = [[] for _ in range(len(devices_list))]
     # global_acc_bm_device_accuracies = [[] for _ in range(len(devices_list))]
@@ -245,11 +245,11 @@ def main():
         for device in devices_list:
             global_acc_bm, indi_acc_bm, global_acc_am, indi_acc_am = device.test_accuracy(comm_round)
             for acc_name in accuracy_types:
-                vars()[f"{acc_name}_device_accuracies"][device._idx - 1].append(vars()[acc_name])
-            # global_acc_bm_device_accuracies[device._idx - 1].append(global_acc_bm)
-            # indi_acc_bm_device_accuracies[device._idx - 1].append(indi_acc_bm) 
-            # global_acc_am_device_accuracies[device._idx - 1].append(global_acc_am)
-            # indi_acc_am_device_accuracies[device._idx - 1].append(indi_acc_am)
+                vars()[f"{acc_name}_device_accuracies"][device.idx - 1].append(vars()[acc_name])
+            # global_acc_bm_device_accuracies[device.idx - 1].append(global_acc_bm)
+            # indi_acc_bm_device_accuracies[device.idx - 1].append(indi_acc_bm) 
+            # global_acc_am_device_accuracies[device.idx - 1].append(global_acc_am)
+            # indi_acc_am_device_accuracies[device.idx - 1].append(indi_acc_am)
             
             # print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
             # print(f"Length: {device.blockchain.get_chain_length()}")
