@@ -169,6 +169,7 @@ class Device():
         self.prune(comm_round)
         self.reinit_params()
         self.train()
+        self.test_accuracy(comm_round)
         # if malicious, introduce noise
         if self.is_malicious:
             self.poison_model()

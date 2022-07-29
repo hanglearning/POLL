@@ -232,8 +232,8 @@ def main():
             # print("just append with pruned amount", get_pruned_amount_by_weights(device.model))
         
         ### all devices test latest models ###
-        for device in devices_list:
-            device.test_accuracy(comm_round)
+        # for device in devices_list:
+        #     device.test_accuracy(comm_round)
             
             # print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
             # print(f"Length: {device.blockchain.get_chain_length()}")
