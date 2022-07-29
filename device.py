@@ -490,6 +490,9 @@ class Device():
             # disturb vote
             model_vote = model_vote * -1 if self.is_malicious else model_vote
                 
+            # DEBUG ALWAYS 1
+            model_vote = 1
+            
             print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote}.")
             
             # form validator tx for this lotter tx (and model)
@@ -559,7 +562,8 @@ class Device():
                 pos_voted_txes[lotter_idx] = chosen_tx
             else:
                 neg_voted_txes[lotter_idx].extend(corresponding_validators_txes)
-        self._final_ticket_model = fedavg_lotteryfl(final_models_to_fedavg, self.args.dev_device)
+        # self._final_ticket_model = fedavg_lotteryfl(final_models_to_fedavg, self.args.dev_device)
+        self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
         # print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
         # print()
         self._pos_voted_txes = pos_voted_txes
