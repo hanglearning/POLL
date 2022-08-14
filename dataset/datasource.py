@@ -118,8 +118,7 @@ def get_data_noniid_cifar10(n_devices, n_class, nsamples, batch_size=32, rate_un
 
 def get_data_noniid_mnist(n_devices, n_class, nsamples, batch_size=32, rate_unbalance=1.0, num_workers=1):
 
-    train_data, test_data = [], []
-    train_data, test_data, user_train, user_test = get_dataset_mnist_extr_noniid(
+    train_data, test_data, user_train, user_test, user_labels = get_dataset_mnist_extr_noniid(
         n_devices, n_class, nsamples, rate_unbalance)
 
     train_loaders = []
@@ -144,4 +143,10 @@ def get_data_noniid_mnist(n_devices, n_class, nsamples, batch_size=32, rate_unba
             test_data, batch_sampler=sampler_test)
         test_loaders.append(loader_test)
 
-    return train_loaders, test_loaders
+    # create global_test_loader (test ticket model before reapplying mask)
+    global_test = torch.utils.data.BatchSampler(
+            torch.utils.data.SubsetRandomSampler(list(range(10000))), batch_size, drop_last=False)
+    global_test_loader = torch.utils.data.DataLoader(
+        test_data, batch_sampler=global_test, num_workers=num_workers)
+
+    return train_loaders, test_loaders, user_labels, global_test_loader

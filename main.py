@@ -46,25 +46,25 @@ parser.add_argument('--resync_verbose', type=bool, default=True)
 parser.add_argument('--seed', type=int, default=40)
 parser.add_argument('--wandb_username', type=str, default=None)
 parser.add_argument('--wandb_project', type=str, default=None)
+parser.add_argument('--run_note', type=str, default=None)
 
 ####################### federated learning setting #######################
-parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="cifar10")
+parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
 parser.add_argument('--arch', type=str, default='cnn', help='cnn|mlp')
 parser.add_argument('--dataset_mode', type=str,default='non-iid', help='non-iid|iid')
+parser.add_argument('--comm_rounds', type=int, default=40)
+parser.add_argument('--frac_devices_per_round', type=float, default=1.0)
+parser.add_argument('--epochs', type=int, default=5)
+parser.add_argument('--batch_size', type=int, default=10)
+parser.add_argument('--lr', type=float, default=0.01)
+parser.add_argument('--n_samples', type=int, default=20)
+parser.add_argument('--n_class', type=int, default=3)
+parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
+parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
 # below for DataLoaders
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
 parser.add_argument('--num_workers', type=int, default=0)
 # above for DataLoaders
-parser.add_argument('--comm_rounds', type=int, default=20)
-parser.add_argument('--frac_devices_per_round', type=float, default=1.0)
-parser.add_argument('--epochs', type=int, default=10)
-parser.add_argument('--batch_size', type=int, default=32)
-parser.add_argument('--lr', type=float, default=1e-3)
-parser.add_argument('--n_samples', type=int, default=20)
-parser.add_argument('--n_class', type=int, default=2)
-parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
-parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
-
 
 
 ####################### blockchained pruning setting #######################
@@ -72,16 +72,16 @@ parser.add_argument('--target_spar', type=float, default=0.8)
 parser.add_argument('--diff_base', type=float, default=0.0, help='start pruning difficulty')
 parser.add_argument('--diff_incre', type=float, default=0.2, help='increment of difficulty every diff_freq')
 parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increased by diff_incre every diff_freq rounds')
-parser.add_argument('--warm_mask', type=int, default=1, help='warm mask as a new comer')
+# parser.add_argument('--warm_mask', type=int, default=1, help='warm mask as a new comer')
 
 ####################### blockchain setting #######################
-parser.add_argument('--n_devices', type=int, default=6)
+parser.add_argument('--n_devices', type=int, default=20)
 parser.add_argument('--lotter_reward', type=int, default=10)
 parser.add_argument('--validator_reward', type=int, default=8)
 parser.add_argument('--win_val_reward', type=int, default=15)
 # parser.add_argument('--validator_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
 # parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted lotter txes have invalid model_sigs, the block will be dropped")
-parser.add_argument('--n_lotters', type=str, default='4', 
+parser.add_argument('--n_lotters', type=str, default='14', 
                     help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of lotters and validators are random from round to round')
 parser.add_argument('--validator_portion', type=int, default=0.5,
                     help='this determins how many validators should one lotter send txs to. e.g., there are 6 validators in the network and validator_portion = 0.5, then one lotter will send tx to 6*0.5=3 validators')
@@ -104,7 +104,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime("%m%d%Y_%H%M%S")
+    wandb.run.name = datetime.now().strftime(f"lotters_{args.n_lotters}_validators{args.n_devices - int(args.n_lotters)}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_%m%d%Y_%H%M%S")
     wandb.config.update(args)
     
     ######## initiate devices ########
@@ -232,11 +232,11 @@ def main():
             # print("just append with pruned amount", get_pruned_amount_by_weights(device.model))
         
         ### all devices test latest models ###
-        # for device in devices_list:
-        #     device.test_accuracy(comm_round)
+        for device in devices_list:
+            device.test_accuracy(comm_round)
             
-            # print("after mask append", device.idx, get_pruned_amount_by_weights(device.model))
-            # print(f"Length: {device.blockchain.get_chain_length()}")
+            print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
+            print(f"Length: {device.blockchain.get_chain_length()}")
         
         
 

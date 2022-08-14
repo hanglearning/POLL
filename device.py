@@ -44,7 +44,6 @@ class Device():
         self.idx = idx
         self.args = args
         # ticket learning variables
-        self._mask = {}
         self._reinit = False
         self._train_loader = train_loader
         self._test_loader = test_loader
@@ -166,64 +165,39 @@ class Device():
     def ticket_learning(self, comm_round):
         # 1. prune; 2. reinit; 3. train; 4. introduce noice;
         print()
-        self.prune(comm_round)
+        self.prune()
         self.reinit_params()
         self.train()
-        self.test_accuracy(comm_round)
+        # self.test_accuracy(comm_round)
         # if malicious, introduce noise
         if self.is_malicious:
             self.poison_model()
-    
-    def warm_mask(self):
-        # for new comers - an extra train at the begining
-        self.train()
         
-    def prune(self, comm_round):
-        # comm_round used to debug, will be deleted
-        if not self._mask:
-            # new lotter
-            # warm_mask - an extra train before prune
-            if self.args.warm_mask:
-                self.warm_mask()
-            else:
-                # vs directly prune
-                pass
-        else:
-            # apply local mask to global model weights (do not generate mask object)
-            # print(f"Lotter {self.idx} before applying mask, pruned amount: {get_pruned_amount_by_weights(model=self.model):.2%}")
-            apply_local_mask(self.model, self._mask)
+    def prune(self):
             
-        already_pruned_amount = get_pruned_amount_by_weights(model=self.model)
+        already_pruned_amount = round(get_pruned_amount_by_weights(model=self.model), 2)
         print(f"Lotter {self.idx} is pruning.\nCurrent pruned amount:{already_pruned_amount:.2%}")
         curr_prune_diff = self.blockchain.get_cur_pruning_diff()
-        amount_to_prune = min(self.blockchain.target_pruning_rate, max(already_pruned_amount, curr_prune_diff))
         
-        if amount_to_prune > already_pruned_amount:
+        if curr_prune_diff > already_pruned_amount:
             self._reinit = True
         
-        print(f"Amount to prune: {amount_to_prune}")
+        print(f"Current pruning difficulty: {curr_prune_diff}")
         
-        if amount_to_prune:
+        if curr_prune_diff:
             l1_prune(model=self.model,
-                    amount=amount_to_prune,
+                    amount=curr_prune_diff,
                     name='weight',
                     verbose=self.args.prune_verbose)
-        
-        # pytorch_make_prune_permanent(self.model)
-        # if not self.args.prune_verbose:
-        #     print(f"After pruning, pruned amount:{get_pruned_amount_by_weights(self.model):.2%}")
             
-        if not self.args.prune_verbose:
-            print(f"After pruning, pruned amount:{get_pruned_amount_by_mask(self.model):.2%}")
-            
-        # update local mask
-        for layer, module in self.model.named_children():
-            for name, mask in module.named_buffers():
-                if 'mask' in name:
-                    self._mask[layer] = mask
+            if not self.args.prune_verbose:
+                print(f"After pruning, pruned amount:{get_pruned_amount_by_mask(self.model):.2%}")
+        else:
+            print("Prune skipped.")
+    
                         
     def reinit_params(self):
-        # reinit only if a device had pruned more weights off
+        # reinit if prune_diff increased
         if self._reinit:
             source_params = dict(self.init_global_model.named_parameters())
             for name, param in self.model.named_parameters():
@@ -733,31 +707,20 @@ class Device():
         # wandb.log({f"{self.idx}_global_acc": global_model_accuracy, "comm_round": comm_round})
         
     def test_accuracy(self, comm_round):
-        global_acc_bm = test_by_data_set(self.model,
+        global_acc = test_by_data_set(self.model,
                 self.global_test_loader,
                 self.args.dev_device,
                 self.args.test_verbose)['Accuracy'][0]
-        indi_acc_bm = test_by_data_set(self.model,
-                self._test_loader,
-                self.args.dev_device,
-                self.args.test_verbose)['Accuracy'][0]
-        # apply mask to model
-        temp_model = deepcopy(self.model)
-        apply_local_mask(temp_model, self._mask)
-        global_acc_am = test_by_data_set(temp_model,
-                self.global_test_loader,
-                self.args.dev_device,
-                self.args.test_verbose)['Accuracy'][0]
-        indi_acc_am = test_by_data_set(temp_model,
+        indi_acc = test_by_data_set(self.model,
                 self._test_loader,
                 self.args.dev_device,
                 self.args.test_verbose)['Accuracy'][0]
         
-        print(f"\n{self.role}", self.idx,"\nglobal_acc_bm", round(global_acc_bm, 2), "indi_acc_bm", round(indi_acc_bm, 2), "\nglobal_acc_am", round(global_acc_am, 2), "indi_acc_am", round(indi_acc_am, 2))
+        print(f"\n{self.role}", self.idx,"\nglobal_acc", round(global_acc, 2), "indi_acc", round(indi_acc, 2))
         
-        wandb.log({"comm_round": comm_round, f"{self.idx}_global_acc_bm": round(global_acc_bm, 2), f"{self.idx}_indi_acc_bm": round(indi_acc_bm, 2), f"{self.idx}_global_acc_am": round(global_acc_am, 2), f"{self.idx}_indi_acc_am": round(indi_acc_am, 2)})
+        wandb.log({"comm_round": comm_round, f"{self.idx}_global_acc": round(global_acc, 2), f"{self.idx}_indi_acc": round(indi_acc, 2)})
         
-        return global_acc_bm, indi_acc_bm, global_acc_am, indi_acc_am
+        return global_acc, indi_acc
         
         
     

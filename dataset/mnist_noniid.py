@@ -14,9 +14,9 @@ def get_dataset_mnist_extr_noniid(n_devices, n_class, nsamples, rate_unbalance):
                                   transform=apply_transform)
 
     # Chose euqal splits for every user
-    user_groups_train, user_groups_test = mnist_extr_noniid(
+    user_groups_train, user_groups_test, user_groups_labels = mnist_extr_noniid(
         train_dataset, test_dataset, n_devices, n_class, nsamples, rate_unbalance)
-    return train_dataset, test_dataset, user_groups_train, user_groups_test
+    return train_dataset, test_dataset, user_groups_train, user_groups_test, user_groups_labels
 
 
 def mnist_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_samples, rate_unbalance):
@@ -29,8 +29,10 @@ def mnist_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
 
     idx_class = [i for i in range(num_classes)]
     idx_shard = np.array([i for i in range(num_shards_train)])
+
     dict_users_train = {i: np.array([]) for i in range(n_devices)}
     dict_users_test = {i: np.array([]) for i in range(n_devices)}
+    dict_users_labels = {i: np.array([]) for i in range(n_devices)}
     idxs = np.arange(num_shards_train*num_imgs_train)
 
     labels = np.array(train_dataset.targets)
@@ -55,6 +57,7 @@ def mnist_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
     for i in range(n_devices):
         user_labels = np.array([])
         temp_set = set(np.random.choice(10, n_class, replace=False))
+        dict_users_labels[i] = temp_set
         rand_set = []
         for j in temp_set:
             choice = np.random.choice(idx_shards[j], 1)[0]
@@ -79,4 +82,4 @@ def mnist_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
         for label in user_labels_set:
             dict_users_test[i] = np.concatenate(
                 (dict_users_test[i], idxs_test_splits[int(label)]), axis=0)
-    return dict_users_train, dict_users_test
+    return dict_users_train, dict_users_test, dict_users_labels
