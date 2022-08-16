@@ -1,4 +1,9 @@
+# TODO before the paper version
+# TODO - write model signature function
+# TODO - append_block() check block hash
+
 import os
+from this import d
 import torch
 import argparse
 import pickle
@@ -75,15 +80,16 @@ parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increas
 # parser.add_argument('--warm_mask', type=int, default=1, help='warm mask as a new comer')
 
 ####################### blockchain setting #######################
-parser.add_argument('--n_devices', type=int, default=20)
+parser.add_argument('--n_devices', type=int, default=6)
 parser.add_argument('--lotter_reward', type=int, default=10)
 parser.add_argument('--validator_reward', type=int, default=8)
-parser.add_argument('--win_val_reward', type=int, default=15)
+parser.add_argument('--win_val_reward', type=int, default=15) # generally, we encourage being a lotter, but being a validator you can hit the jackpot to be the winning validator and gain the most rewards.
+
 # parser.add_argument('--validator_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
 # parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted lotter txes have invalid model_sigs, the block will be dropped")
-parser.add_argument('--n_lotters', type=str, default='14', 
+parser.add_argument('--n_lotters', type=str, default='3', 
                     help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of lotters and validators are random from round to round')
-parser.add_argument('--validator_portion', type=int, default=0.5,
+parser.add_argument('--validator_portion', type=float, default=0.5,
                     help='this determins how many validators should one lotter send txs to. e.g., there are 6 validators in the network and validator_portion = 0.5, then one lotter will send tx to 6*0.5=3 validators')
 parser.add_argument('--check_signature', type=int, default=0, 
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
@@ -165,16 +171,18 @@ def main():
         ''' reinit params '''
         for device in online_devices_list:
             device._received_blocks = []
-        
-        for validator in online_validators:
-            validator._associated_lotters = set()
-            validator._verified_lotter_txs = {}
-            validator._neg_voted_txes = {}
-            validator._received_validator_txs = {}
-            validator._verified_validator_txs = set()
-            validator._final_ticket_model = None
-            #validator._final_models_signatures = set()
-            #validator._dup_pos_voted_txes = {}
+            # lotters
+            device._associated_validators = set()
+            # validators
+            device._associated_lotters = set()
+            device._verified_lotter_txs = {}
+            device._neg_voted_txes = {}
+            device._received_validator_txs = {}
+            device._verified_validator_txs = set()
+            device._final_ticket_model = None
+            device.produced_block = None
+            #device._final_models_signatures = set()
+            device._dup_pos_voted_txes = {}
             
         ''' device starts Fed-POLL '''
         ### lotter starts learning and pruning ###
@@ -225,18 +233,20 @@ def main():
             # append block
             if not device.append_block(winning_block):
                 # TODO - record forking event
-                # perform chain_resync last round
+                print(f"{device.role} {device.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync chain next round.")
+                # perform chain_resync next round
                 continue
             # process block
             device.process_block(comm_round)
             # print("just append with pruned amount", get_pruned_amount_by_weights(device.model))
         
         ### all devices test latest models ###
-        for device in devices_list:
-            device.test_accuracy(comm_round)
+
+        # for device in devices_list:
+        #     device.test_accuracy(comm_round)
             
-            print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
-            print(f"Length: {device.blockchain.get_chain_length()}")
+        #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
+        #     print(f"Length: {device.blockchain.get_chain_length()}")
         
         
 

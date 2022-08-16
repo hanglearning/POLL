@@ -1,4 +1,4 @@
-# TODO - validate chain, check check_chain_validity() on VBFL
+# TODO - complete validate_chain(), check check_chain_validity() on VBFL
 
 # TODO - tx and msg sig check, finish after 5/19
 
@@ -65,6 +65,7 @@ class Device():
         self._lotter_tx = None
         # for validators
         self._associated_lotters = set()
+        self._associated_validators = set()
         self._validator_txs = None
         self._verified_lotter_txs = {}
         self._received_validator_txs = {} # lotter_id_to_corresponding_validator_txes
@@ -74,6 +75,7 @@ class Device():
         self._participating_validators = set()
         self._neg_voted_txes = {} # models NOT used in final ticket model
         self._dup_pos_voted_txes = {}
+        self.produced_block = None
         # init key pair
         self.modulus = None
         self.private_key = None
@@ -99,7 +101,6 @@ class Device():
         if comm_round == 1:
             return False
         online_devices_list = copy(online_devices_list)
-        online_devices_list.remove(self)
         if self.stake_book:
             # resync chain from the recorded device that has the highest stake and online
             self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
@@ -115,7 +116,7 @@ class Device():
                             continue
                         # update chain
                         self.blockchain.replace_chain(device.blockchain.chain)
-                        print(f"{self.role} {self.idx}'s chain is resynced from {device.idx}, who picked {idx_to_device[device.idx].blockchain.get_last_block().produced_by}'s block.")
+                        print(f"\n{self.role} {self.idx}'s chain is resynced from {device.idx}, who picked {idx_to_device[device.idx].blockchain.get_last_block().produced_by}'s block.")
                         # update stake_book
                         self.stake_book = device.stake_book
                         return True
@@ -141,24 +142,19 @@ class Device():
     
     def validate_chain(self, chain_to_check):
         return True
-    
-    def verify_digital_sig(self, msg, modulus, key):
-        return True
         
     def verify_tx_sig(self, tx):
-        # tx_before_signed = copy(tx)
-        # del tx_before_signed["tx_sig"]
-        # modulus = tx['rsa_pub_key']["modulus"]
-        # pub_key = tx['rsa_pub_key']["pub_key"]
-        # signature = tx["tx_sig"]
-        # # verify
-        # hash = int.from_bytes(sha256(str(sorted(tx_before_signed.items())).encode('utf-8')).digest(), byteorder='big')
-        # hashFromSignature = pow(signature, pub_key, modulus)
-        # if hash == hashFromSignature:
-        #     return True
-        # return False
-        return True
-            
+        # assume all tx signatures are valid to speed up execution
+        # return True
+        tx_before_signed = copy(tx)
+        del tx_before_signed["tx_sig"]
+        modulus = tx['rsa_pub_key']["modulus"]
+        pub_key = tx['rsa_pub_key']["pub_key"]
+        signature = tx["tx_sig"]
+        # verify
+        hash = int.from_bytes(sha256(str(tx_before_signed).encode('utf-8')).digest(), byteorder='big')
+        hashFromSignature = pow(signature, pub_key, modulus)
+        return hash == hashFromSignature     
     
     ######## lotters method ########
     
@@ -233,7 +229,7 @@ class Device():
         print(f"Device {self.idx} has poisoned its model.")
             
     def create_model_sig(self):
-        
+        # TODO - new model signature 
         # model_sig sparsity has to meet the current pruning difficulty, and not detemrined by the lotter's own model's pruned amount, as the lotter's model will not be recorded in the final block, so a lotter can just provide a very small model_sig in terms of dimension to increase the success of passing the model_sig check in the final block. Also this discourages a lotter to prune too quickly, because then its model_sig will provide more real model weights
         # spar(model_sig) >= (1-curr_pruining_diff)*sig_portion
         # find all 1s in mask layer by layer
@@ -331,10 +327,10 @@ class Device():
             'lotter_idx' : self.idx,
             'rsa_pub_key': self.return_rsa_pub_key(),
             'model' : pytorch_make_prune_permanent(self.model),
-            'm_sig' : self.model_sig,
+            'm_sig' : self.model_sig, # TODO
             'm_sig_sig': self.sign_msg(self.model_sig)
         }
-        lotter_tx['tx_sig'] = self.sign_msg(sorted(lotter_tx.items()))
+        lotter_tx['tx_sig'] = self.sign_msg(str(lotter_tx))
         self._lotter_tx = lotter_tx
     
     def asso_validators(self, validators):
@@ -343,6 +339,8 @@ class Device():
         for validator in validators:
             if validator.is_online:
                 validator.associate_with_lotter(self)
+                self._associated_validators.add(validator)
+                print(f"{self.role} {self.idx} associated with {validator.role} {validator.idx}")
                 n_validators_to_send -= 1
                 if n_validators_to_send == 0:
                     break
@@ -360,130 +358,109 @@ class Device():
                 self._verified_lotter_txs[lotter.idx] = lotter._lotter_tx
             else:
                 print(f"Signature of tx from lotter {lotter['idx']} is invalid.")
-    
-    # TODO - this may not be necesssary, because it will not be included in the block, and if lotter uses low-weight to attack, model score will be low anyway            
-    # def verify_model_sig_positions(self):    
-    #     def verify_model_sig_positions_by_layer(verified_tx):
-    #         lotter_idx = verified_tx['idx']
-    #         model = verified_tx['model']
-    #         m_sig = verified_tx['m_sig']
-    #         for layer, module in model.named_children():
-    #             for name, weight_params in module.named_parameters():
-    #                 if 'weight' in name:
-    #                     unpruned_positions = list(zip(*np.where(weight_params[layer] != 0)))
-    #                     model_sig_positions = list(zip(*np.where(m_sig[layer] != 0)))
-    #                     for pos in model_sig_positions:
-    #                         if pos not in unpruned_positions:
-    #                             print(f"Model signature from lotter {lotter_idx} is invalid.")
-    #                             return False
-    #         return True
-    #     passed_model_sig_tx = []
-    #     for verified_tx in self._verified_lotter_txs:
-    #         if verify_model_sig_positions_by_layer(verified_tx):                    
-    #             passed_model_sig_tx.append(verified_tx)
-    #     self._verified_lotter_txs = passed_model_sig_tx
+
+    def form_validator_tx(self, lotter_idx, model_vote):
+        validator_tx = {
+            '1. validator_idx': self.idx,
+            '2. lotter_idx': lotter_idx,
+            '3. lotter_model': self._verified_lotter_txs[lotter_idx]['model'], # will be removed in final block
+            '4. lotter_m_sig': self._verified_lotter_txs[lotter_idx]['m_sig'], # will be preserved to record validator's participation, also can be used to verify if a an unsed model has been used and vice versa
+            '5. l_sign(lotter_m_sig)': self._verified_lotter_txs[lotter_idx]['m_sig_sig'], # the lotter makes sure that no other validators can temper with lotter_m_sig
+            '6. lotter_rsa': self._verified_lotter_txs[lotter_idx]['rsa_pub_key'],
+            '7. validator_vote': model_vote,
+            '8. v_sign(validator_vote + lotter_sign(l_m_sig))': self.sign_msg(model_vote + self._verified_lotter_txs[lotter_idx]['m_sig_sig']), # the validator makes sure no other validators can temper with vote'
+            'rsa_pub_key': self.return_rsa_pub_key() 
+        } 
+        validator_tx['tx_sig'] = self.sign_msg(str(validator_tx)) # will be removed in final block
+        return validator_tx
 
     def validate_models_and_init_validator_tx(self, idx_to_device):
-        
-        # def avg_individual_model(models_list, by_how_many):
-        #     new_models_list = deepcopy(models_list)
-        #     for idx, model in new_models_list.items():
-        #         for name, param in model.named_parameters():
-        #             param.data.copy_(torch.mul(param, 1/by_how_many))
-        #     return new_models_list    
+
+        # Assume lotters are honest in providing their model signatures by summing up rows and columns. This attack is so easy to spot.
         
         def exclude_one_model(models_list):
             if len(models_list) == 1:
-                return models_list
-            exclusion_models_list = {}
+                sys.exit("This shouldn't happen in exclude_one_model().")
+            excluding_one_models_list = {}
             for idx, model in models_list.items():
                 tmp_models_list = copy(models_list)
                 del tmp_models_list[idx]
-                exclusion_models_list[idx] = fedavg_lotteryfl(list(tmp_models_list.values()), self.args.dev_device)
-            return exclusion_models_list
+                excluding_one_models_list[idx] = fedavg(list(tmp_models_list.values()), self.args.dev_device)
+            return excluding_one_models_list
         
-        # validate model and model_sig sparsity
+        # validate model sparsity
         lotter_idx_to_model = {}
         for lotter_idx, lotter_tx in self._verified_lotter_txs.items():
             lotter_model = lotter_tx['model']
             lotter_model_sig = lotter_tx['m_sig']
-            # check lotter_tx['m_m_sig'] by lotter's rsa key, easy, skip
+            # TODO - check lotter_tx['m_m_sig'] by lotter's rsa key, easy, skip
             # validate model spasity
             pruned_amount = round(get_pruned_amount_by_weights(lotter_model), 2)
-            if round(pruned_amount, 2) < round(self.blockchain.get_cur_pruning_diff(), 1):
+            prune_diff = self.blockchain.get_cur_pruning_diff()
+            if round(pruned_amount, 2) < round(prune_diff, 1):
                 # skip model below the current pruning difficulty
+                print(f"Lotter {lotter_idx}'s prune amount {pruned_amount} is less than current blockchain's prune difficulty {prune_diff}. Model skipped.")
                 continue
             if self.is_malicious:
                 # drop legitimate model
                 # even malicious validator cannot pass the model with invalid sparsity because it'll be detected by other validators
                 continue
-            # validate model_sig sparsity
-            # if not round(get_model_sig_sparsity(self.model, lotter_model_sig), 2) >= (1 - self.blockchain.get_cur_pruning_diff()) * self.args.sig_portion:
-            #     continue   # or vote -1?? no, hard requirement
             
             lotter_idx_to_model[lotter_idx] = lotter_model
             
         if not lotter_idx_to_model:
-            # this validator either has not received any lotter tx, or did not pass the verification of any lotter tx
+            print(f"{self.role} {self.idx} either has not received any lotter tx, or did not pass the verification of any lotter tx.")
             return
         
         # validate model accuracy
-        # base_aggr_model = fedavg(list(lotter_idx_to_model.values()), self.args.dev_device)
-        base_aggr_model = fedavg_lotteryfl(list(lotter_idx_to_model.values()), self.args.dev_device)
+        base_aggr_model = fedavg(list(lotter_idx_to_model.values()), self.args.dev_device)
         base_aggr_model_acc = test_by_data_set(base_aggr_model,
                                self._train_loader,
                                self.args.dev_device,
                                self.args.test_verbose)['Accuracy'][0]
-        
-        # by_how_many = 1 if len(lotter_idx_to_model) == 1 else len(lotter_idx_to_model) - 1
-        
-        # lotter_idx_to_weighted_model = avg_individual_model(lotter_idx_to_model, by_how_many)
-        
-        exclusion_models_list = exclude_one_model(lotter_idx_to_model)
-        
-        # test each model
+
         validator_txes = []
-        
-        print(f"\nValidator {self.idx} with base model acc {round(base_aggr_model_acc, 2)} and labels {self._user_labels} starts validating models.")
-        
-        for lotter_idx, model in exclusion_models_list.items():
-            this_model_acc = test_by_data_set(model,
-                            self._train_loader,
-                            self.args.dev_device,
-                            self.args.test_verbose)['Accuracy'][0]
+        if len(lotter_idx_to_model) == 1:
+            # vote = 0, due to lack comparing models
+            lotter_idx = list(lotter_idx_to_model.keys())[0]
+            model_vote = 0
+            validator_txes.append(self.form_validator_tx(lotter_idx, model_vote))
+        else:
+            # lotter_idx_to_weighted_model = avg_individual_model(lotter_idx_to_model, len(lotter_idx_to_model) - 1)
             
-            acc_difference = base_aggr_model_acc - this_model_acc
-            # added =0 because if n_class so small, in first few rounds the diff could = 0
-            if acc_difference >= 0:
-                model_vote = 1
-                inc_or_dec = "decreased"
-            else:
-                model_vote = -1
-                inc_or_dec = "increased"
-        
-            # disturb vote
-            model_vote = model_vote * -1 if self.is_malicious else model_vote
+            excluding_one_models_list = exclude_one_model(lotter_idx_to_model)
+            
+            # test each model
+            print(f"\nValidator {self.idx} with base model acc {round(base_aggr_model_acc, 2)} and labels {self._user_labels} starts validating models.")
+            
+            for lotter_idx, model in excluding_one_models_list.items():
+                this_model_acc = test_by_data_set(model,
+                                self._train_loader,
+                                self.args.dev_device,
+                                self.args.test_verbose)['Accuracy'][0]
                 
-            # DEBUG ALWAYS 1
-            model_vote = 1
+                acc_difference = base_aggr_model_acc - this_model_acc
+                if acc_difference > 0:
+                    model_vote = 1
+                    inc_or_dec = "decreased"
+                elif acc_difference == 0:
+                    # added =0 because if n_class so small, in first few rounds the diff could = 0
+                    # see if good or bad is undecided
+                    model_vote = 0
+                    inc_or_dec = "CAN NOT DECIDE"
+                else:
+                    model_vote = -1
+                    inc_or_dec = "increased"
             
-            print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote}.")
-            
-            # form validator tx for this lotter tx (and model)
-            validator_tx = {
-                '1. validator_idx': self.idx,
-                '2. lotter_idx': lotter_idx,
-                '3. lotter_model': self._verified_lotter_txs[lotter_idx]['model'], # will be removed in final block
-                '4. lotter_m_sig': self._verified_lotter_txs[lotter_idx]['m_sig'], # will be removed if unpicked for model averaging
-                # Not any more. Preserve in final block, can be used to verify if a an unsed transaction has been used, or used is marked as unused
-                '5. l_sign(lotter_m_sig)': self._verified_lotter_txs[lotter_idx]['m_sig_sig'], # the lotter makes sure that no other validators can temper with lotter_m_sig
-                '6. lotter_rsa': self._verified_lotter_txs[lotter_idx]['rsa_pub_key'],
-                '7. validator_rsa': self.return_rsa_pub_key(),
-                '8. validator_vote': model_vote,
-                '9. v_sign(validator_vote + lotter_sign(l_m_sig))': self.sign_msg(model_vote + self._verified_lotter_txs[lotter_idx]['m_sig_sig']), # the validator makes sure no other validators can temper with vote'
-            } # TODO - should also have sign(1,2,5,6,7,8,9), sign (1,2,3,5,6,7,8,9) and sign(all_above) - this will be removed in final block
-            
-            validator_txes.append(validator_tx)
+                # disturb vote
+                model_vote = model_vote * -1 if self.is_malicious else model_vote
+
+                
+                print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote}.")
+                
+                # form validator tx for this lotter tx (and model)
+                validator_tx = self.form_validator_tx(lotter_idx, model_vote)
+                validator_txes.append(validator_tx)
         self._validator_txs = validator_txes
         
     def exchange_and_verify_validator_tx(self, validators):
@@ -492,31 +469,29 @@ class Device():
         # exchange among validators
         for validator in validators:
             # if validator == self:
-            #     continue - it's okay to have it
+            #     continue - it's okay to have itself
             for tx in validator._validator_txs:
-                # assume all signatures are verified
-                if self.is_malicious:
+                tx = deepcopy(tx)
+                if not self.verify_tx_sig(tx):
                     continue
+                    # TODO - record to black list
+                if self.is_malicious:
+                    # randomly drop tx
+                    if random.random() < 0.5:
+                        continue
                 if tx['2. lotter_idx'] in self._received_validator_txs:
                     self._received_validator_txs[tx['2. lotter_idx']].append(tx)
                 else:
                     self._received_validator_txs[tx['2. lotter_idx']] = [tx]
-            # if self.verify_tx_sig(validator._validator_tx):
-            #     self._verified_validator_txs.add(validator._validator_tx)
-            # else:
-            #     print(f"Signature of tx from validator {validator['idx']} is invalid.")
-            #     # TODO - record to black list
-            
-            
-        
+                    
     
     def produce_global_model(self):
         # TODO - check again model sparsity from other validators' transactions
         # TODO - change _received_validator_txs to _verified_validator_txs
         final_models_to_fedavg = []
-        pos_voted_txes = {} # lotter_idx to its validator tx, used txes in block
-        duplicated_pos_voted_txes = {} # sign(1256789), record participating validators
-        neg_voted_txes = {} # unused txes in block
+        pos_voted_txes = {} # lotter_idx to its validator tx, used txes in block, verify participating validators and model_sig
+        duplicated_pos_voted_txes = {} # verify participating validators
+        neg_voted_txes = {} # unused txes in block, verify participating validators and model_sig
         participating_validators = set()
         for lotter_idx, corresponding_validators_txes in self._received_validator_txs.items():
             neg_voted_txes[lotter_idx] = []
@@ -525,17 +500,19 @@ class Device():
             # if lotter_idx in self._black_list: # gave up blacklist
             #     if self._black_list[lotter_idx] >= self.args.kick_out_rounds:
             #         continue
-            model_votes = sum([validator_tx['8. validator_vote'] for validator_tx in corresponding_validators_txes])
+            model_votes = sum([validator_tx['7. validator_vote'] for validator_tx in corresponding_validators_txes])
             participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes]))
             if model_votes >= 0:
-                # random.choice is necessary because in this design one lotter can send different txs to different validators, or change to use stake_book to determine
+                # random.choice is necessary because in this design one lotter can send different txs to different validators. can change to use stake_book to determine which validator's tx to pick
                 chosen_tx = random.choice(corresponding_validators_txes)
                 corresponding_validators_txes.remove(chosen_tx)
                 duplicated_pos_voted_txes[lotter_idx].extend(corresponding_validators_txes)
                 final_models_to_fedavg.append(chosen_tx['3. lotter_model'])
                 pos_voted_txes[lotter_idx] = chosen_tx
+                del neg_voted_txes[lotter_idx]
             else:
                 neg_voted_txes[lotter_idx].extend(corresponding_validators_txes)
+                del duplicated_pos_voted_txes[lotter_idx]
         # self._final_ticket_model = fedavg_lotteryfl(final_models_to_fedavg, self.args.dev_device)
         self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
         # print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
@@ -543,20 +520,41 @@ class Device():
         self._pos_voted_txes = pos_voted_txes
         self._dup_pos_voted_txes = duplicated_pos_voted_txes
         self._neg_voted_txes = neg_voted_txes
-        # no way to ensure that actually the validator chooses the model and model_sig within the same tx, but if a lotter doesn't send different models, there would be no issue
+        # no way to ensure that the validator chooses the model and model_sig within the same tx, but if a lotter doesn't send different models, there would be no issue. Validator also is responsible to check for the model_sig. If invalid, should drop before the block. Once model_sig found invalid in the block, the whole block becomes invalid and no one will be rewarded, so validators are not incentived to select a model_sig from a different validator_tx that has the same model 
         self._participating_validators = participating_validators
+
+    def remove_model_and_vtx_sig(self):
+        
+        def remove_from_single_tx(v_tx):
+            del v_tx['3. lotter_model']
+            del v_tx['tx_sig']
+        
+        for validator_tx in self._pos_voted_txes.values():
+            remove_from_single_tx(validator_tx)
+
+        for validator_txs in self._dup_pos_voted_txes.values():
+            for validator_tx in validator_txs:
+                remove_from_single_tx(validator_tx)
+
+        for validator_txs in self._neg_voted_txes.values():
+            for validator_tx in validator_txs:
+                remove_from_single_tx(validator_tx)
     
     def produce_block(self):
         
         def sign_block(block_to_sign):
-            block_to_sign.block_signature = self.sign_msg(block_to_sign.__dict__)
+            block_to_sign.block_signature = self.sign_msg(str(block_to_sign.__dict__))
       
         last_block_hash = self.blockchain.get_last_block_hash()
-        
-        # TODO - delete all models from txs, only preserve model model_sigs
+
+        # remove model and validator signature from validator txs
+        self.remove_model_and_vtx_sig()
+
         block = Block(last_block_hash, self._final_ticket_model, self._pos_voted_txes, self._dup_pos_voted_txes, self._neg_voted_txes, self._participating_validators, self.idx, self.return_rsa_pub_key())
-        
         sign_block(block)
+
+        self.produced_block = block
+
         return block
         
     def broadcast_block(self, online_devices_list, block):
@@ -568,6 +566,7 @@ class Device():
         return {"modulus": self.modulus, "pub_key": self.public_key}
     
     def sign_msg(self, msg):
+        # TODO - sorted migjt be a bug when signing. need to change in VBFL as well
         hash = int.from_bytes(sha256(str(msg).encode('utf-8')).digest(), byteorder='big')
         # pow() is python built-in modular exponentiation function
         signature = pow(hash, self.private_key, self.modulus)
@@ -576,26 +575,40 @@ class Device():
     def pick_wining_block(self, idx_to_device):
         
         def verify_block_sig(block):
-            # TODO - complete
-            return True
-            block_content = copy(block.__dict__)
-            block_content['block_signature'] = None
-            return block.__dict__['block_signature'] == sha256(str(sorted(block_content.items())).encode('utf-8')).hexdigest()
+            # assume block signature is not disturbed
+            # return True
+            block_to_verify = copy(block)
+            block_to_verify.block_signature = None
+            modulus = block.validator_rsa_pub_key["modulus"]
+            pub_key = block.validator_rsa_pub_key["pub_key"]
+            signature = block.block_signature
+            # verify
+            hash = int.from_bytes(sha256(str(block_to_verify.__dict__).encode('utf-8')).digest(), byteorder='big')
+            hashFromSignature = pow(signature, pub_key, modulus)
+            return hash == hashFromSignature
         
         if not self._received_blocks:
             print(f"\n{self.idx} has not received any block. Resync chain next round.")
+            return
             
         while self._received_blocks:
             # TODO - check while logic when blocks are not valid
 
-            if not sum(self.stake_book.values()):
-                # joined the 1st comm round, pick randomly
-                picked_block = random.choice(self._received_blocks)
-                self._received_blocks.remove(picked_block)
-                if verify_block_sig(picked_block):
-                    winning_validator = picked_block.produced_by
-                    print(f"\n{self.role} {self.idx} {self._user_labels} picks {winning_validator}'s {idx_to_device[winning_validator]._user_labels} block.")
-                    return picked_block
+            # when all validators have the same stake, lotters pick randomly, a validator favors its own block. This most likely happens only in the 1st comm round
+
+            if len(set(self.stake_book.values())) == 1:
+                if self.role == 'lotter':
+                    picked_block = random.choice(self._received_blocks)
+                    self._received_blocks.remove(picked_block)
+                    if verify_block_sig(picked_block):
+                        winning_validator = picked_block.produced_by
+                    else:
+                        continue
+                if self.role == 'validator':
+                    winning_validator = self.idx
+                    picked_block = self.produced_block                
+                print(f"\n{self.role} {self.idx} {self._user_labels} picks {winning_validator}'s {idx_to_device[winning_validator]._user_labels} block.")
+                return picked_block
             else:
                 self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
                 received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks}

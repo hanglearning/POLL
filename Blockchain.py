@@ -39,8 +39,8 @@ class Blockchain:
 
     def append_block(self, block):
         # temporarily for debug pruning 
-        self.chain.append(copy.copy(block))
-        return True
+        # self.chain.append(copy.copy(block))
+        # return True
         # check previous_block hash match
         if not self.get_last_block_hash():
             self.chain.append(copy.copy(block))
