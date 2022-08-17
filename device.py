@@ -67,7 +67,7 @@ class Device():
         # for validators
         self._associated_lotters = set()
         self._associated_validators = set()
-        self._validator_txs = None
+        self._validator_txs = []
         self._verified_lotter_txs = {}
         self._received_validator_txs = {} # lotter_id_to_corresponding_validator_txes
         self._verified_validator_txs = set()
@@ -155,6 +155,7 @@ class Device():
         self.model = copy_model(self.blockchain.get_last_block().global_ticket_model, self.args.dev_device)            
     
     def validate_chain(self, chain_to_check):
+        # shall use check_block_when_resyncing(block, last_block)
         return True
         
     def verify_tx_sig(self, tx):
@@ -585,21 +586,22 @@ class Device():
         # pow() is python built-in modular exponentiation function
         signature = pow(hash, self.private_key, self.modulus)
         return signature
+
+    def verify_block_sig(self, block):
+        # assume block signature is not disturbed
+        # return True
+        block_to_verify = copy(block)
+        block_to_verify.block_signature = None
+        modulus = block.validator_rsa_pub_key["modulus"]
+        pub_key = block.validator_rsa_pub_key["pub_key"]
+        signature = block.block_signature
+        # verify
+        hash = int.from_bytes(sha256(str(block_to_verify.__dict__).encode('utf-8')).digest(), byteorder='big')
+        hashFromSignature = pow(signature, pub_key, modulus)
+        return hash == hashFromSignature
     
     def pick_wining_block(self, idx_to_device):
         
-        def verify_block_sig(block):
-            # assume block signature is not disturbed
-            # return True
-            block_to_verify = copy(block)
-            block_to_verify.block_signature = None
-            modulus = block.validator_rsa_pub_key["modulus"]
-            pub_key = block.validator_rsa_pub_key["pub_key"]
-            signature = block.block_signature
-            # verify
-            hash = int.from_bytes(sha256(str(block_to_verify.__dict__).encode('utf-8')).digest(), byteorder='big')
-            hashFromSignature = pow(signature, pub_key, modulus)
-            return hash == hashFromSignature
         
         if not self._received_blocks:
             print(f"\n{self.idx} has not received any block. Resync chain next round.")
@@ -614,7 +616,7 @@ class Device():
                 if self.role == 'lotter':
                     picked_block = random.choice(self._received_blocks)
                     self._received_blocks.remove(picked_block)
-                    if verify_block_sig(picked_block):
+                    if self.verify_block_sig(picked_block):
                         winning_validator = picked_block.produced_by
                     else:
                         continue
@@ -635,84 +637,69 @@ class Device():
         
         print(f"\n{self.idx}'s received blocks are not valid. Resync chain next round.")
         return None # all validators are in black list, resync chain
-        
-        
-    def append_block(self, winning_block):
-        if self.blockchain.append_block(winning_block):
+
+    def check_last_block_hash_match(self, block):
+        if not self.blockchain.get_last_block_hash():
             return True
-        # all blocks do not match previous_hash, resync chain
+        else:
+            last_block_hash = self.blockchain.get_last_block_hash()
+            if block.previous_block_hash == last_block_hash:
+                return True
         return False
-        
-    def process_block(self, comm_round):
-        
-        def verify_m_sig(global_model, model_sig, n_lotters):
-            return True
-            # may also verify signature sparsity, but it should be verified by validator
-            verified_positions = 0
-            pass_threshold = int(get_num_total_model_params(global_model) * (1 - self.blockchain.get_cur_pruning_diff()) * self.args.sig_portion * self.args.sig_threshold)
-            
-            for layer_name, params in global_model.named_parameters():
-                if 'weight' in layer_name:
-                    layer_name = layer_name.split('.')[0]
-                    model_sig_positions = list(zip(*np.where(model_sig[layer_name] != 0)))
-                    for pos in model_sig_positions:
-                            if params[pos] * n_lotters >= model_sig[layer_name][pos]:
-                                verified_positions += 1
-                                if verified_positions == pass_threshold:
-                                    return True
-                            else:
-                                pass
+
+    def check_block_when_resyncing(self, block, last_block):
+        # 1. check block signature
+        if not self.verify_block_sig(block):
             return False
-            
-            
-            
-            # for layer, module in global_model.named_children():
-            #     for name, weight_params in module.named_parameters():
-            #         if 'weight' in name:
-            #             model_sig_positions = list(zip(*np.where(model_sig[layer] != 0)))
-            #             for pos in model_sig_positions:
-            #                 if weight_params[pos] * n_lotters >= model_sig[layer][pos]:
-            #                     verified_positions += 1
-            #                     if verified_positions == pass_threshold:
-            #                         return True
-            # return False
-            
+        # 2. check last block hash match
+        if block.previous_block_hash != last_block.compute_hash():
+            return False
+        # 3. check POLL
+        if not self.proof_of_lottery_learning(block):
+            return False
+        # block checked
+        return True
+
+    def check_block_when_appending(self, winning_block):
+        # 1. check last block hash match
+        if not self.check_last_block_hash_match(winning_block):
+            print(f"{self.role} {self.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain next round.")
+            self._resync_to = winning_block.produced_by
+            return False
+        # 2. check POLL
+        if not self.proof_of_lottery_learning(winning_block):
+            print("POLL check failed.")
+            return False
+        # block checked
+        return True
+
+    def proof_of_lottery_learning(self, block):
+        ''' TODO
+        1. Check global sparsity meets pruning difficulty
+        2. Check model signature
+        3. Record participating validators by verifying pos, dub_pos and neg voted txes by verifying '8 v_sign' in validator_tx
+
+        promote the idea of proof-of-useful-learning -
+        1. neural network training SGD is random, and the model evolvement is represented in the stake book
+        2. network pruning is also random given SGD is random, and it can be verified by checking global sparsity and model signature
+        3. when chain resync, PoW re-syncs to the longest chain, while we resync to the chain of the current highest stake holder validator. Not easy to hack
+        '''
+        return True
+
+        
+    def append_and_process_block(self, winning_block):
+
+        self.blockchain.chain.append(copy(winning_block))
+        
         block = self.blockchain.get_last_block()
-        to_reward_lotters = [] # model signature checks. However, not necessarily send same model to every validator. It can do it anyway, but risk into validator voiding its rewards, so we also do not call "to_reward_lotters" here
+        to_reward_lotters = list(block.pos_voted_txes.keys())
         
-        # validate model signature
+        # for unused (duplicated) positive transactions - votes >= 0, reverify participating validators
         pass
         
-        # no matter used or unused transactions, their model_sig sparsity have already passed hard requirments, so not check again here in code
-        
-        # for used positive transactions - votes >= 0
-        n_lotters = len(block.pos_voted_txes)
-        for lotter_idx, tx in block.pos_voted_txes.items():
-            if verify_m_sig(block.global_ticket_model, tx['4. lotter_m_sig'], n_lotters):
-                to_reward_lotters.append(lotter_idx)
-                
-        # for unused (duplicated) positive transactions - votes >= 0, record participating validators. Optionally, check if a lotter sends same tx to every validator, and deem it as dishonest if it sends different, but I think it's okay and it's its own risk to let validator pick model_sig that mismatches the original model
-        # but at least should check (lotters in pos_voted_txes == lotters in dup_pos_voted_txes), if not, drop this block
-        pass
-        
-                
-        # validator could be dishonest about n_lotters - if over half of model signatures invalid, meaning high probablility that most of the lotters are dishonest, or the validator dishonest, so this block has to be dropped
-        # if len(to_reward_lotters) < int(n_lotters * self.args.block_drop_threshold):
-        #     self.blockchain.drop_block()
-        #     return
-                    
-        # for unused transactions votes < 0
-        # if the above passed, most likely validator is honest about n_lotters, so below we still use n_lotters, shouldn't be a big deal
-        # if any unsed transaction found being used, reward the lotter and cut winning validator's reward (to normal)
-        
-        # TRICKY PART IS HOW DO WE CHOOSE n_lotters for unused??
-        
-        
-        # get participating validators - TODO finish the code, iterate over all used and unused validator idxes
+        # get participating validators - TODO finish the code in POLL(), iterate over all used and unused validator idxes
         # temporarily use block.participating_validators
-        
-       
-        
+                
         # update stake info
         for to_reward_lotter in to_reward_lotters:
             self.stake_book[to_reward_lotter] += self.args.lotter_reward
@@ -726,12 +713,7 @@ class Device():
         
         # update global ticket model
         self.model = deepcopy(block.global_ticket_model)
-        
-        # global_model_accuracy = test_by_data_set(self.model,
-        #                        self._test_loader,
-        #                        self.args.dev_device,
-        #                        self.args.test_verbose)['Accuracy'][0]
-        # wandb.log({f"{self.idx}_global_acc": global_model_accuracy, "comm_round": comm_round})
+       
         
     def test_accuracy(self, comm_round):
         global_acc = test_by_data_set(self.model,
@@ -749,127 +731,3 @@ class Device():
         
         return global_acc, indi_acc
         
-        
-    
-    def update(self) -> None:
-        """
-            Interface to Server
-        """
-        print(f"\n----------Device:{self.idx} Update---------------------")
-
-        print(f"Evaluating Global model ")
-        metrics = self.eval(self.model)
-        accuracy = metrics['Accuracy'][0]
-        print(f'Global model accuracy: {accuracy}')
-
-        prune_rate = get_prune_summary(model=self.model,
-                                       name='weight')['global']
-        print('Global model prune percentage: {}'.format(prune_rate))
-           
-        if self.cur_prune_rate < self.args.target_spar:
-            if accuracy > self.eita:
-                self.cur_prune_rate = min(self.cur_prune_rate + self.args.prune_step,
-                                          self.args.target_spar)
-                if self.cur_prune_rate > prune_rate:
-                    l1_prune(model=self.model,
-                             amount=self.cur_prune_rate - prune_rate,
-                             name='weight',
-                             verbose=self.args.prune_verbose)
-                    self.prune_rates.append(self.cur_prune_rate)
-                else:
-                    self.prune_rates.append(prune_rate)
-                # reinitialize model with init_params
-                source_params = dict(self.init_global_model.named_parameters())
-                for name, param in self.model.named_parameters():
-                    param.data.copy_(source_params[name].data)
-
-                self.model = self.model
-                self.eita = self.eita_hat
-
-            else:
-                self.eita *= self.alpha
-                self.model = self.model
-                self.prune_rates.append(prune_rate)
-        else:
-            if self.cur_prune_rate > prune_rate:
-                l1_prune(model=self.model,
-                         amount=self.cur_prune_rate-prune_rate,
-                         name='weight',
-                         verbose=self.args.prune_verbose)
-                self.prune_rates.append(self.cur_prune_rate)
-            else:
-                self.prune_rates.append(self.prune_rates)
-            self.model = self.model
-
-        print(f"\nTraining local model")
-        self.train(self.elapsed_comm_rounds)
-
-        print(f"\nEvaluating Trained Model")
-        metrics = self.eval(self.model)
-        print(f'Trained model accuracy: {metrics["Accuracy"][0]}')
-
-        wandb.log({f"{self.idx}_cur_prune_rate": self.cur_prune_rate})
-        wandb.log({f"{self.idx}_eita": self.eita})
-        wandb.log(
-            {f"{self.idx}_percent_pruned": self.prune_rates[-1]})
-
-        for key, thing in metrics.items():
-            if(isinstance(thing, list)):
-                wandb.log({f"{self.idx}_{key}": thing[0]})
-            else:
-                wandb.log({f"{self.idx}_{key}": thing})
-
-        if (self.elapsed_comm_rounds+1) % self.args.save_freq == 0:
-            self.save(self.model)
-
-        self.elapsed_comm_rounds += 1
-
-
-    @torch.no_grad()
-    def download(self, global_model, init_global_model, *args, **kwargs):
-        """
-            Download global model from server
-        """
-        self.model = global_model
-        self.init_global_model = init_global_model
-
-        params_to_prune = get_prune_params(self.model)
-        for param, name in params_to_prune:
-            weights = getattr(param, name)
-            masked = torch.eq(weights.data, 0.00).sum().item()
-            # masked = 0.00
-            prune.l1_unstructured(param, name, amount=int(masked))
-
-        params_to_prune = get_prune_params(self.init_global_model)
-        for param, name in params_to_prune:
-            weights = getattr(param, name)
-            masked = torch.eq(weights.data, 0.00).sum().item()
-            # masked = 0.00
-            prune.l1_unstructured(param, name, amount=int(masked))
-
-    def eval(self, model):
-        """
-            Eval self.model
-        """
-        eval_score = test_by_data_set(model,
-                               self.test_loader,
-                               self.args.dev_device,
-                               self.args.test_verbose)
-        self.accuracies.append(eval_score['Accuracy'][0])
-        return eval_score
-
-    def save(self, *args, **kwargs):
-        pass
-
-    def upload(self, *args, **kwargs) -> Dict[nn.Module, float]:
-        """
-            Upload self.model
-        """
-        upload_model = copy_model(model=self.model, device=self.args.dev_device)
-        params_pruned = get_prune_params(upload_model, name='weight')
-        for param, name in params_pruned:
-            prune.remove(param, name)
-        return {
-            'model': upload_model,
-            'acc': self.accuracies[-1]
-        }

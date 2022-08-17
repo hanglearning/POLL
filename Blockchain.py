@@ -36,23 +36,6 @@ class Blockchain:
 
     def replace_chain(self, chain):
         self.chain = copy.copy(chain)
-
-    def append_block(self, block):
-        # temporarily for debug pruning 
-        # self.chain.append(copy.copy(block))
-        # return True
-        # check previous_block hash match
-        if not self.get_last_block_hash():
-            self.chain.append(copy.copy(block))
-            # self.last_block_hash = block.compute_block_hash()
-            return True
-        else:
-            last_block_hash = self.get_last_block_hash()
-            if block.previous_block_hash == last_block_hash:
-                self.chain.append(copy.copy(block))
-                # self.last_block_hash = block.compute_block_hash()
-                return True
-        return False
     
     def drop_block(self):
         self.chain.pop()

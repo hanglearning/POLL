@@ -174,6 +174,7 @@ def main():
             # lotters
             device._associated_validators = set()
             # validators
+            device._validator_txs = []
             device._associated_lotters = set()
             device._verified_lotter_txs = {}
             device._neg_voted_txes = {}
@@ -228,24 +229,20 @@ def main():
             # pick winning block based on PoS
             winning_block = device.pick_wining_block(idx_to_device)
             if not winning_block:
-                # perform chain_resync last round
+                # no winning_block found, perform chain_resync next round
                 continue
-            # append block
-            if not device.append_block(winning_block):
-                # TODO - record forking event
-                print(f"{device.role} {device.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain next round.")
-                device._resync_to = winning_block.produced_by
-                # perform chain_resync next round
-                # TODO - may need force resync to keep up the pruning difficulty
+            # check block
+            if not device.check_block_when_appending(winning_block):
+                # block check failed, perform chain_resync next round
                 continue
-            # process block
-            device.process_block(comm_round)
+            # append and process block
+            device.append_and_process_block(winning_block)
             # print("just append with pruned amount", get_pruned_amount_by_weights(device.model))
         
         ### all devices test latest models ###
 
-        # for device in devices_list:
-        #     device.test_accuracy(comm_round)
+        for device in devices_list:
+            device.test_accuracy(comm_round)
             
         #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
         #     print(f"Length: {device.blockchain.get_chain_length()}")
