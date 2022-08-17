@@ -573,10 +573,10 @@ class Device():
         incorrect_pos = 0
         incorrect_neg = 0
         for pos_voted_lotter_idx in list(block.pos_voted_txes.keys()):
-            if idx_to_device[pos_voted_lotter_idx].is_malicious:
+            if idx_to_device[pos_voted_lotter_idx]._is_malicious:
                 incorrect_pos += 1
         for neg_voted_lotter_idx in list(block.neg_voted_txes.keys()):
-            if not idx_to_device[pos_voted_lotter_idx].is_malicious:
+            if not idx_to_device[pos_voted_lotter_idx]._is_malicious:
                 incorrect_neg += 1
         print(f"{incorrect_pos} / {len(block.pos_voted_txes)} are malicious but used.")
         print(f"{incorrect_neg} / {len(block.neg_voted_txes)} are legit but not used.")
