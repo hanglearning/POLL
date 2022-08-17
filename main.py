@@ -244,8 +244,8 @@ def main():
         
         ### all devices test latest models ###
 
-        # for device in devices_list:
-        #     device.test_accuracy(comm_round)
+        for device in devices_list:
+            device.test_accuracy(comm_round)
             
         #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
         #     print(f"Length: {device.blockchain.get_chain_length()}")
