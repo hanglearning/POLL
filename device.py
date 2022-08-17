@@ -61,6 +61,7 @@ class Device():
         self.blockchain = Blockchain(args.diff_base, args.diff_incre, args.diff_freq, args.target_spar)
         self._received_blocks = []
         self._black_list = {}
+        self._resync_to = None
         # for lotters
         self._lotter_tx = None
         # for validators
@@ -100,6 +101,18 @@ class Device():
     def resync_chain(self, comm_round, idx_to_device, online_devices_list):
         if comm_round == 1:
             return False
+        if self._resync_to:
+            # _resync_to specified to the last round's picked winning validator
+            if not self.validate_chain(device.blockchain):
+                pass
+            else:
+                # update chain
+                self.blockchain.replace_chain(device.blockchain.chain)
+                print(f"\n{self.role} {self.idx}'s chain is resynced from last round's picked winning validator {device.idx}.")
+                # update stake_book
+                self.stake_book = device.stake_book
+                self._resync_to = None
+                return True
         online_devices_list = copy(online_devices_list)
         if self.stake_book:
             # resync chain from the recorded device that has the highest stake and online

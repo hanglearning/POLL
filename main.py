@@ -3,7 +3,7 @@
 # TODO - append_block() check block hash
 
 import os
-from this import d
+# from this import d
 import torch
 import argparse
 import pickle
@@ -233,8 +233,10 @@ def main():
             # append block
             if not device.append_block(winning_block):
                 # TODO - record forking event
-                print(f"{device.role} {device.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync chain next round.")
+                print(f"{device.role} {device.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain next round.")
+                device._resync_to = winning_block.produced_by
                 # perform chain_resync next round
+                # TODO - may need force resync to keep up the pruning difficulty
                 continue
             # process block
             device.process_block(comm_round)
