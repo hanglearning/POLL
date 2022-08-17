@@ -98,7 +98,7 @@ class Device():
     def is_online(self):
         return random.random() <= self.args.network_stability
     
-    def resync_chain(self, comm_round, idx_to_device, online_devices_list):
+    def resync_chain(self, comm_round, idx_to_device, online_devices_list, online_validators):
         if comm_round == 1:
             return False
         if self._resync_to:
@@ -114,10 +114,12 @@ class Device():
                 return True                
         online_devices_list = copy(online_devices_list)
         if self.stake_book:
-            # resync chain from the recorded device that has the highest stake and online
+            # resync chain from online validators having the highest recorded stake
             self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
             for device_idx, stake in self.stake_book.items():
                 device = idx_to_device[device_idx]
+                if device.role != "validator":
+                    continue
                 if device in online_devices_list:
                     # compare chain difference
                     if self.blockchain.get_last_block_hash() == device.blockchain.get_last_block_hash():

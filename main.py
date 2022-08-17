@@ -189,7 +189,7 @@ def main():
         for lotter_iter in range(len(online_lotters)):
             lotter = online_lotters[lotter_iter]
             # resync chain
-            if lotter.resync_chain(comm_round, idx_to_device, online_devices_list):
+            if lotter.resync_chain(comm_round, idx_to_device, online_devices_list, online_validators):
                 lotter.post_resync()
             # perform regular ticket learning
             lotter.ticket_learning(comm_round)
@@ -204,7 +204,7 @@ def main():
         for validator_iter in range(len(online_validators)):
             validator = online_validators[validator_iter]
             # resync chain
-            if validator.resync_chain(comm_round, idx_to_device, online_devices_list):
+            if validator.resync_chain(comm_round, idx_to_device, online_devices_list, online_validators):
                 validator.post_resync()
             # verify tx signature
             validator.receive_and_verify_lotter_tx_sig()
@@ -244,8 +244,8 @@ def main():
         
         ### all devices test latest models ###
 
-        for device in devices_list:
-            device.test_accuracy(comm_round)
+        # for device in devices_list:
+        #     device.test_accuracy(comm_round)
             
         #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
         #     print(f"Length: {device.blockchain.get_chain_length()}")
