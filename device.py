@@ -103,16 +103,15 @@ class Device():
             return False
         if self._resync_to:
             # _resync_to specified to the last round's picked winning validator
-            if not self.validate_chain(device.blockchain):
-                pass
-            else:
+            resync_to_device = idx_to_device[self._resync_to]
+            if self.validate_chain(resync_to_device.blockchain) and self._resync_to in [d.idx for d in online_devices_list]:
                 # update chain
-                self.blockchain.replace_chain(device.blockchain.chain)
-                print(f"\n{self.role} {self.idx}'s chain is resynced from last round's picked winning validator {device.idx}.")
+                self.blockchain.replace_chain(resync_to_device.blockchain.chain)
+                print(f"\n{self.role} {self.idx}'s chain is resynced from last round's picked winning validator {self._resync_to}.")
                 # update stake_book
-                self.stake_book = device.stake_book
+                self.stake_book = resync_to_device.stake_book
                 self._resync_to = None
-                return True
+                return True                
         online_devices_list = copy(online_devices_list)
         if self.stake_book:
             # resync chain from the recorded device that has the highest stake and online
