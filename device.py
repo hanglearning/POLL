@@ -54,7 +54,7 @@ class Device():
         self.model_sig = None
         # blockchain variables
         self.role = None
-        self.is_malicious = is_malicious
+        self._is_malicious = is_malicious
         # self.device_dict = None
         self.peers = None
         self.stake_book = None
@@ -181,13 +181,15 @@ class Device():
         self.train()
         # self.test_accuracy(comm_round)
         # if malicious, introduce noise
-        if self.is_malicious:
+        if self._is_malicious:
             self.poison_model()
         
     def prune(self):
-            
+        
+        identity = "malicious" if self._is_malicious else "legit"
+
         already_pruned_amount = round(get_pruned_amount_by_weights(model=self.model), 2)
-        print(f"Lotter {self.idx} is pruning.\nCurrent pruned amount:{already_pruned_amount:.2%}")
+        print(f"Lotter {self.idx} {identity} is pruning.\nCurrent pruned amount:{already_pruned_amount:.2%}")
         curr_prune_diff = self.blockchain.get_cur_pruning_diff()
         
         if curr_prune_diff > already_pruned_amount:
@@ -232,15 +234,15 @@ class Device():
 
             
     def poison_model(self):
-        def malicious_worker_add_noise_to_weights(m):
+        def malicious_lotter_add_noise_to_weights(m):
             with torch.no_grad():
                 if hasattr(m, 'weight'):
-                    noise = self.noise_variance * torch.randn(m.weight.size())
+                    noise = self.args.noise_variance * torch.randn(m.weight.size())
                     variance_of_noise = torch.var(noise)
-                    m.weight.add_(noise.to(self.dev))
-                    self.variance_of_noises.append(float(variance_of_noise))
+                    m.weight.add_(noise.to(self.args.dev_device))
+                    # self.variance_of_noises.append(float(variance_of_noise))
         # check if masks are disturbed as well
-        self.model.apply(malicious_worker_add_noise_to_weights)
+        self.model.apply(malicious_lotter_add_noise_to_weights)
         print(f"Device {self.idx} has poisoned its model.")
             
     def create_model_sig(self):
@@ -368,8 +370,8 @@ class Device():
         for lotter in self._associated_lotters:
             if self.verify_tx_sig(lotter._lotter_tx):
                 # TODO - check sig of model_sig
-                if self.is_malicious:
-                    continue
+                # if self.args.malicious_validators and self._is_malicious:
+                #     continue
                 self._verified_lotter_txs[lotter.idx] = lotter._lotter_tx
             else:
                 print(f"Signature of tx from lotter {lotter['idx']} is invalid.")
@@ -416,10 +418,10 @@ class Device():
                 # skip model below the current pruning difficulty
                 print(f"Lotter {lotter_idx}'s prune amount {pruned_amount} is less than current blockchain's prune difficulty {prune_diff}. Model skipped.")
                 continue
-            if self.is_malicious:
+            # if self.args.malicious_validators and self._is_malicious:
                 # drop legitimate model
                 # even malicious validator cannot pass the model with invalid sparsity because it'll be detected by other validators
-                continue
+                # continue
             
             lotter_idx_to_model[lotter_idx] = lotter_model
             
@@ -445,8 +447,10 @@ class Device():
             
             excluding_one_models_list = exclude_one_model(lotter_idx_to_model)
             
+            identity = "malicious" if self._is_malicious else "legit"
+
             # test each model
-            print(f"\nValidator {self.idx} with base model acc {round(base_aggr_model_acc, 2)} and labels {self._user_labels} starts validating models.")
+            print(f"\nValidator {self.idx} {identity} with base model acc {round(base_aggr_model_acc, 2)} and labels {self._user_labels} starts validating models.")
             
             for lotter_idx, model in excluding_one_models_list.items():
                 this_model_acc = test_by_data_set(model,
@@ -455,23 +459,31 @@ class Device():
                                 self.args.test_verbose)['Accuracy'][0]
                 
                 acc_difference = base_aggr_model_acc - this_model_acc
+
+                malicious_lotter = idx_to_device[lotter_idx]._is_malicious
+                judgement = "right"
+
                 if acc_difference > 0:
                     model_vote = 1
                     inc_or_dec = "decreased"
+                    if malicious_lotter:
+                        judgement = "WRONG"
                 elif acc_difference == 0:
                     # added =0 because if n_class so small, in first few rounds the diff could = 0
                     # see if good or bad is undecided
                     model_vote = 0
                     inc_or_dec = "CAN NOT DECIDE"
+                    if malicious_lotter:
+                        judgement = "WRONG"
                 else:
                     model_vote = -1
                     inc_or_dec = "increased"
             
                 # disturb vote
-                model_vote = model_vote * -1 if self.is_malicious else model_vote
+                if self.args.malicious_validators and self._is_malicious:
+                    model_vote = model_vote * -1
 
-                
-                print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote}.")
+                print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote}\nJudgement {judgement}.")
                 
                 # form validator tx for this lotter tx (and model)
                 validator_tx = self.form_validator_tx(lotter_idx, model_vote)
@@ -490,10 +502,10 @@ class Device():
                 if not self.verify_tx_sig(tx):
                     continue
                     # TODO - record to black list
-                if self.is_malicious:
-                    # randomly drop tx
-                    if random.random() < 0.5:
-                        continue
+                # if self.args.malicious_validators and self._is_malicious:
+                #     # randomly drop tx
+                #     if random.random() < 0.5:
+                #         continue
                 if tx['2. lotter_idx'] in self._received_validator_txs:
                     self._received_validator_txs[tx['2. lotter_idx']].append(tx)
                 else:

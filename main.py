@@ -65,6 +65,7 @@ parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--n_samples', type=int, default=20)
 parser.add_argument('--n_class', type=int, default=3)
 parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
+parser.add_argument('--malicious_validators', type=int, default=0, help="malicious validators will disturb votes or randomly drop legitimate lotter transactions")
 parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
 # below for DataLoaders
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
