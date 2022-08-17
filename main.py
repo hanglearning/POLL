@@ -238,7 +238,8 @@ def main():
                 continue
             # append and process block
             device.append_and_process_block(winning_block)
-            # print("just append with pruned amount", get_pruned_amount_by_weights(device.model))
+            # check performance of the validation mechanism
+            device.check_validation_performance(winning_block, idx_to_device)
         
         ### all devices test latest models ###
 

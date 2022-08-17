@@ -469,8 +469,7 @@ class Device():
                     if malicious_lotter:
                         judgement = "WRONG"
                 elif acc_difference == 0:
-                    # added =0 because if n_class so small, in first few rounds the diff could = 0
-                    # see if good or bad is undecided
+                    # added =0 because if n_class so small, in first few rounds the diff could = 0, so good or bad is undecided
                     model_vote = 0
                     inc_or_dec = "CAN NOT DECIDE"
                     if malicious_lotter:
@@ -478,16 +477,19 @@ class Device():
                 else:
                     model_vote = -1
                     inc_or_dec = "increased"
+                    if not malicious_lotter:
+                        judgement = "WRONG"
             
                 # disturb vote
                 if self.args.malicious_validators and self._is_malicious:
                     model_vote = model_vote * -1
 
-                print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote}\nJudgement {judgement}.")
+                print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote} - Judgement {judgement}.")
                 
                 # form validator tx for this lotter tx (and model)
                 validator_tx = self.form_validator_tx(lotter_idx, model_vote)
                 validator_txes.append(validator_tx)
+        
         self._validator_txs = validator_txes
         
     def exchange_and_verify_validator_tx(self, validators):
@@ -566,6 +568,20 @@ class Device():
         for validator_txs in self._neg_voted_txes.values():
             for validator_tx in validator_txs:
                 remove_from_single_tx(validator_tx)
+
+    def check_validation_performance(self, block, idx_to_device):
+        incorrect_pos = 0
+        incorrect_neg = 0
+        for pos_voted_lotter_idx in list(block.pos_voted_txes.keys()):
+            if idx_to_device[pos_voted_lotter_idx].is_malicious:
+                incorrect_pos += 1
+        for neg_voted_lotter_idx in list(block.neg_voted_txes.keys()):
+            if not idx_to_device[pos_voted_lotter_idx].is_malicious:
+                incorrect_neg += 1
+        print(f"{incorrect_pos} / {len(block.pos_voted_txes)} are malicious but used.")
+        print(f"{incorrect_neg} / {len(block.neg_voted_txes)} are legit but not used.")
+        print(f"Incorrect rate: {(incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.pos_voted_txes)):.2%}")
+
     
     def produce_block(self):
         
@@ -725,7 +741,6 @@ class Device():
         
         # update global ticket model
         self.model = deepcopy(block.global_ticket_model)
-       
         
     def test_accuracy(self, comm_round):
         global_acc = test_by_data_set(self.model,
