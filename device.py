@@ -576,11 +576,11 @@ class Device():
             if idx_to_device[pos_voted_lotter_idx]._is_malicious:
                 incorrect_pos += 1
         for neg_voted_lotter_idx in list(block.neg_voted_txes.keys()):
-            if not idx_to_device[pos_voted_lotter_idx]._is_malicious:
+            if not idx_to_device[neg_voted_lotter_idx]._is_malicious:
                 incorrect_neg += 1
         print(f"{incorrect_pos} / {len(block.pos_voted_txes)} are malicious but used.")
         print(f"{incorrect_neg} / {len(block.neg_voted_txes)} are legit but not used.")
-        print(f"Incorrect rate: {(incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.pos_voted_txes)):.2%}")
+        print(f"Incorrect rate: {(incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.neg_voted_txes)):.2%}")
 
     
     def produce_block(self):
