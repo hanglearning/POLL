@@ -357,9 +357,9 @@ class Device():
             if validator.is_online:
                 validator.associate_with_lotter(self)
                 self._associated_validators.add(validator)
-                print(f"{self.role} {self.idx} associated with {validator.role} {validator.idx}")
                 n_validators_to_send -= 1
                 if n_validators_to_send == 0:
+                    print(f"{self.role} {self.idx} associated with validators {[v.idx for v in self._associated_validators]}")
                     break
                 
     ### Validators ###
