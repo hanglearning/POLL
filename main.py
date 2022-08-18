@@ -59,6 +59,7 @@ parser.add_argument('--seed', type=int, default=40)
 parser.add_argument('--wandb_username', type=str, default=None)
 parser.add_argument('--wandb_project', type=str, default=None)
 parser.add_argument('--run_note', type=str, default=None)
+parser.add_argument('--debug_validation', type=int, default=1)
 
 ####################### federated learning setting #######################
 parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
@@ -251,8 +252,8 @@ def main():
         
         ### all devices test latest models ###
 
-        for device in devices_list:
-            device.test_accuracy(comm_round)
+        # for device in devices_list:
+        #     device.test_accuracy(comm_round)
 
         ### record forking events ###
         forking = 0

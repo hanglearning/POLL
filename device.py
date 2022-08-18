@@ -25,6 +25,7 @@ from Block import Block
 from Blockchain import Blockchain
 import random
 import string
+import collections 
 
 # used for signature embedding
 letters = string.ascii_lowercase
@@ -435,6 +436,9 @@ class Device():
                                self.args.test_verbose)['Accuracy'][0]
 
         validator_txes = []
+
+        # used for debugging the validation scheme
+        user_labels_counter = []
         if len(lotter_idx_to_model) == 1:
             # vote = 0, due to lack comparing models
             lotter_idx = list(lotter_idx_to_model.keys())[0]
@@ -483,10 +487,18 @@ class Device():
                     model_vote = model_vote * -1
 
                 print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote} - Judgement {judgement}.")
+
+                user_labels_counter.extend(list(idx_to_device[lotter_idx]._user_labels))
                 
                 # form validator tx for this lotter tx (and model)
                 validator_tx = self.form_validator_tx(lotter_idx, model_vote)
                 validator_txes.append(validator_tx)
+
+        # debug the validation mechanism
+        if self.args.debug_validation:
+            user_labels_counter_dict = dict(collections.Counter(user_labels_counter))
+            print({k: v for k, v in sorted(user_labels_counter_dict.items(), key=lambda item: item[1], reverse=True)})
+            print("Unique labels", len(user_labels_counter_dict))
         
         self._validator_txs = validator_txes
         
