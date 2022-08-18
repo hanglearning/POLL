@@ -5,6 +5,8 @@
 1. log latest model accuracy in test_accuracy()
 2. log validation mechanism performance in check_validation_performance()
 3. log forking event at the end of main.py
+4. log stake book at the end of main.py
+5. log when a malicious block has been added by any device in the network 
 '''
 import os
 # from this import d
@@ -116,7 +118,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime(f"lotters_{args.n_lotters}_validators{args.n_devices - int(args.n_lotters)}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_%m%d%Y_%H%M%S")
+    wandb.run.name = datetime.now().strftime(f"los_{args.n_lotters}_vas_{args.n_devices - int(args.n_lotters)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_%m%d%Y_%H%M%S")
     wandb.config.update(args)
     
     ######## initiate devices ########
@@ -253,9 +255,9 @@ def main():
             device.test_accuracy(comm_round)
 
         ### record forking events ###
-        forking = False
+        forking = 0
         if len(set([d.blockchain.get_last_block().produced_by for d in online_devices_list])) != 1:
-            forking = True
+            forking = 1
         wandb.log({"comm_round": comm_round, "forking_event": forking})
 
         ### record stake book ###
@@ -266,12 +268,12 @@ def main():
             wandb.log(to_log)
 
         ### record when malicious validator produced a block in network ###
-        malicious_block = False
+        malicious_block = 0
         for device in online_devices_list:
             if device.has_appended_block:
                 block_produced_by = device.blockchain.get_last_block().produced_by
-                if idx_to_device[block_produced_by].is_malious:
-                   malicious_block = True
+                if idx_to_device[block_produced_by]._is_malicious:
+                   malicious_block = 1
                    break
         wandb.log({"comm_round": comm_round, "malicious_block": malicious_block})
             
