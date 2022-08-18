@@ -1,7 +1,11 @@
 # TODO before the paper version
 # TODO - write model signature function
-# TODO - append_block() check block hash
 
+''' wandb.log()
+1. log latest model accuracy in test_accuracy()
+2. log validation mechanism performance in check_validation_performance()
+3. log forking event at the end of main.py
+'''
 import os
 # from this import d
 import torch
@@ -20,6 +24,7 @@ import wandb
 from dataset.datasource import DataLoaders
 from torchmetrics import MetricCollection, Accuracy, Precision, Recall
 import random
+from copy import copy
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -172,6 +177,7 @@ def main():
         ''' reinit params '''
         for device in online_devices_list:
             device._received_blocks = []
+            device.has_appended_block = False
             # lotters
             device._associated_validators = set()
             # validators
@@ -239,12 +245,35 @@ def main():
             # append and process block
             device.append_and_process_block(winning_block)
             # check performance of the validation mechanism
-            device.check_validation_performance(winning_block, idx_to_device)
+            device.check_validation_performance(winning_block, idx_to_device, comm_round)
         
         ### all devices test latest models ###
 
         for device in devices_list:
             device.test_accuracy(comm_round)
+
+        ### record forking events ###
+        forking = False
+        if len(set([d.blockchain.get_last_block().produced_by for d in online_devices_list])) != 1:
+            forking = True
+        wandb.log({"comm_round": comm_round, "forking_event": forking})
+
+        ### record stake book ###
+        for device in devices_list:
+            to_log = {}
+            to_log["comm_round"] = comm_round
+            to_log[f"{device.idx}_stake_book"] = device.stake_book
+            wandb.log(to_log)
+
+        ### record when malicious validator produced a block in network ###
+        malicious_block = False
+        for device in online_devices_list:
+            if device.has_appended_block:
+                block_produced_by = device.blockchain.get_last_block().produced_by
+                if idx_to_device[block_produced_by].is_malious:
+                   malicious_block = True
+                   break
+        wandb.log({"comm_round": comm_round, "malicious_block": malicious_block})
             
         #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
         #     print(f"Length: {device.blockchain.get_chain_length()}")

@@ -55,6 +55,7 @@ class Device():
         # blockchain variables
         self.role = None
         self._is_malicious = is_malicious
+        self.has_appended_block = False
         # self.device_dict = None
         self.peers = None
         self.stake_book = None
@@ -234,15 +235,12 @@ class Device():
 
             
     def poison_model(self):
-        def malicious_lotter_add_noise_to_weights(m):
-            with torch.no_grad():
-                if hasattr(m, 'weight'):
-                    noise = self.args.noise_variance * torch.randn(m.weight.size())
-                    variance_of_noise = torch.var(noise)
-                    m.weight.add_(noise.to(self.args.dev_device))
-                    # self.variance_of_noises.append(float(variance_of_noise))
-        # check if masks are disturbed as well
-        self.model.apply(malicious_lotter_add_noise_to_weights)
+        for layer, module in self.model.named_children():
+            for name, weight_params in module.named_parameters():
+                if "weight" in name:
+                    noise = self.args.noise_variance * torch.randn(weight_params.size())
+                    # variance_of_noise = torch.var(noise)
+                    weight_params.add_(noise.to(self.args.dev_device))
         print(f"Device {self.idx} has poisoned its model.")
             
     def create_model_sig(self):
@@ -569,7 +567,7 @@ class Device():
             for validator_tx in validator_txs:
                 remove_from_single_tx(validator_tx)
 
-    def check_validation_performance(self, block, idx_to_device):
+    def check_validation_performance(self, block, idx_to_device, comm_round):
         incorrect_pos = 0
         incorrect_neg = 0
         for pos_voted_lotter_idx in list(block.pos_voted_txes.keys()):
@@ -580,7 +578,10 @@ class Device():
                 incorrect_neg += 1
         print(f"{incorrect_pos} / {len(block.pos_voted_txes)} are malicious but used.")
         print(f"{incorrect_neg} / {len(block.neg_voted_txes)} are legit but not used.")
-        print(f"Incorrect rate: {(incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.neg_voted_txes)):.2%}")
+        incorrect_rate = (incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.neg_voted_txes))
+        print(f"Incorrect rate: {incorrect_rate:.2%}")
+        # record validation mechanism performance
+        wandb.log({"comm_round": comm_round, f"{self.idx}_block_incorrect_rate": round(incorrect_rate, 2)})
 
     
     def produce_block(self):
@@ -739,6 +740,8 @@ class Device():
             else:
                 self.stake_book[validator] += self.args.validator_reward
         
+        # used to record if a block is produced by a malicious device
+        self.has_appended_block = True
         # update global ticket model
         self.model = deepcopy(block.global_ticket_model)
         
