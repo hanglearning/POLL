@@ -255,6 +255,10 @@ def main():
         # for device in devices_list:
         #     device.test_accuracy(comm_round)
 
+        # import pdb
+        # pdb.set_trace()
+
+
         ### record forking events ###
         forking = 0
         if len(set([d.blockchain.get_last_block().produced_by for d in online_devices_list])) != 1:
