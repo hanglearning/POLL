@@ -230,6 +230,7 @@ class Device():
                     f"Device={self.idx}, epoch={epoch}, comm_round:{self.blockchain.get_chain_length()+1}")
             metrics = util_train(self.model,
                                  self._train_loader,
+                                 self.args.optimizer,
                                  self.args.lr,
                                  self.args.dev_device,
                                  self.args.train_verbose)
