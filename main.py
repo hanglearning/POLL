@@ -1,5 +1,6 @@
 # TODO before the paper version
 # TODO - write model signature function
+# TODO - check pruning difficulty change and reinit correctly
 
 ''' wandb.log()
 1. log latest model accuracy in test_accuracy()
@@ -59,7 +60,7 @@ parser.add_argument('--seed', type=int, default=40)
 parser.add_argument('--wandb_username', type=str, default=None)
 parser.add_argument('--wandb_project', type=str, default=None)
 parser.add_argument('--run_note', type=str, default=None)
-parser.add_argument('--debug_validation', type=int, default=1)
+parser.add_argument('--debug_validation', type=int, default=1, help='show validation process detail')
 
 ####################### federated learning setting #######################
 parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
@@ -80,7 +81,7 @@ parser.add_argument('--noise_variance', type=int, default=1, help="noise varianc
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
 parser.add_argument('--num_workers', type=int, default=0)
 # above for DataLoaders
-
+parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug')
 
 ####################### blockchained pruning setting #######################
 parser.add_argument('--target_spar', type=float, default=0.8)

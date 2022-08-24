@@ -486,6 +486,10 @@ class Device():
                 # disturb vote
                 if self.args.malicious_validators and self._is_malicious:
                     model_vote = model_vote * -1
+                
+                # turn off validation, pass all models
+                if self.args.pass_all_models:
+                    model_vote = 1
 
                 print(f"Excluding lotter {lotter_idx}'s ({idx_to_device[lotter_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote} - Judgement {judgement}.")
 
