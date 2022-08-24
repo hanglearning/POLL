@@ -254,8 +254,8 @@ def main():
         
         ### all devices test latest models ###
 
-        # for device in devices_list:
-        #     device.test_accuracy(comm_round)
+        for device in devices_list:
+            device.test_accuracy(comm_round)
 
         # import pdb
         # pdb.set_trace()
