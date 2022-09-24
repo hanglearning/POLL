@@ -47,7 +47,7 @@ models = {
     }
 }
 
-parser = argparse.ArgumentParser(description='POLL - Proof Of Lottery Learning')
+parser = argparse.ArgumentParser(description='POLL - Proof Of workery Learning')
 
 ####################### system setting #######################
 parser.add_argument('--save_freq', type=int, default=10)
@@ -75,7 +75,7 @@ parser.add_argument('--optimizer', type=str, default="SGD", help="SGD|Adam")
 parser.add_argument('--n_samples', type=int, default=20)
 parser.add_argument('--n_class', type=int, default=3)
 parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
-parser.add_argument('--malicious_validators', type=int, default=0, help="malicious validators will disturb votes or randomly drop legitimate lotter transactions")
+parser.add_argument('--malicious_validators', type=int, default=0, help="malicious validators will disturb votes or randomly drop legitimate worker transactions")
 parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
 # below for DataLoaders
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
@@ -92,22 +92,22 @@ parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increas
 
 ####################### blockchain setting #######################
 parser.add_argument('--n_devices', type=int, default=6)
-parser.add_argument('--lotter_reward', type=int, default=10)
+parser.add_argument('--worker_reward', type=int, default=10)
 parser.add_argument('--validator_reward', type=int, default=8)
-parser.add_argument('--win_val_reward', type=int, default=15) # generally, we encourage being a lotter, but being a validator you can hit the jackpot to be the winning validator and gain the most rewards.
+parser.add_argument('--win_val_reward', type=int, default=15) # generally, we encourage being a worker, but being a validator you can hit the jackpot to be the winning validator and gain the most rewards.
 
 # parser.add_argument('--validator_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
-# parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted lotter txes have invalid model_sigs, the block will be dropped")
-parser.add_argument('--n_lotters', type=str, default='3', 
-                    help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of lotters and validators are random from round to round')
+# parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted worker txes have invalid model_sigs, the block will be dropped")
+parser.add_argument('--n_workers', type=str, default='3', 
+                    help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of workers and validators are random from round to round')
 parser.add_argument('--validator_portion', type=float, default=0.5,
-                    help='this determins how many validators should one lotter send txs to. e.g., there are 6 validators in the network and validator_portion = 0.5, then one lotter will send tx to 6*0.5=3 validators')
+                    help='this determins how many validators should one worker send txs to. e.g., there are 6 validators in the network and validator_portion = 0.5, then one worker will send tx to 6*0.5=3 validators')
 parser.add_argument('--check_signature', type=int, default=0, 
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
 parser.add_argument('--network_stability', type=float, default=1.0, 
                     help='the odds a device can be reached')
 # parser.add_argument('--kick_out_rounds', type=int, default=6, 
-#                     help='if a lotter reaches this many of rounds of negative votes, its model will not be considered for averaging') # TODO- change to consecutive. Actually, gave up this idea as this is public chain
+#                     help='if a worker reaches this many of rounds of negative votes, its model will not be considered for averaging') # TODO- change to consecutive. Actually, gave up this idea as this is public chain
 
 
 args = parser.parse_args()
@@ -121,7 +121,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime(f"los_{args.n_lotters}_vas_{args.n_devices - int(args.n_lotters)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_%m%d%Y_%H%M%S")
+    wandb.run.name = datetime.now().strftime(f"los_{args.n_workers}_vas_{args.n_devices - int(args.n_workers)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_%m%d%Y_%H%M%S")
     wandb.config.update(args)
     
     ######## initiate devices ########
@@ -159,36 +159,36 @@ def main():
         wandb.log({"comm_round": comm_round, "pruning_diff": pruning_diff})
         
         ''' device assign roles '''
-        if args.n_lotters == '*':
-            n_lotters = random.randint(0, args.n_devices - 1)
+        if args.n_workers == '*':
+            n_workers = random.randint(0, args.n_devices - 1)
         else:
-            n_lotters = int(args.n_lotters)
+            n_workers = int(args.n_workers)
                     
         random.shuffle(devices_list)
-        online_lotters = []
+        online_workers = []
         online_validators = []
         for device_iter in range(len(devices_list)):
-            if device_iter < n_lotters:
-                devices_list[device_iter].role = 'lotter'
+            if device_iter < n_workers:
+                devices_list[device_iter].role = 'worker'
                 if devices_list[device_iter].is_online():
-                    online_lotters.append(devices_list[device_iter])
+                    online_workers.append(devices_list[device_iter])
             else:
                 devices_list[device_iter].role = 'validator'
                 if devices_list[device_iter].is_online():
                     online_validators.append(devices_list[device_iter])
         
-        online_devices_list = online_lotters + online_validators
+        online_devices_list = online_workers + online_validators
         
         ''' reinit params '''
         for device in online_devices_list:
             device._received_blocks = []
             device.has_appended_block = False
-            # lotters
+            # workers
             device._associated_validators = set()
             # validators
             device._validator_txs = []
-            device._associated_lotters = set()
-            device._verified_lotter_txs = {}
+            device._associated_workers = set()
+            device._verified_worker_txs = {}
             device._neg_voted_txes = {}
             device._received_validator_txs = {}
             device._verified_validator_txs = set()
@@ -198,20 +198,20 @@ def main():
             device._dup_pos_voted_txes = {}
             
         ''' device starts Fed-POLL '''
-        ### lotter starts learning and pruning ###
-        for lotter_iter in range(len(online_lotters)):
-            lotter = online_lotters[lotter_iter]
+        ### worker starts learning and pruning ###
+        for worker_iter in range(len(online_workers)):
+            worker = online_workers[worker_iter]
             # resync chain
-            if lotter.resync_chain(comm_round, idx_to_device, online_devices_list, online_validators):
-                lotter.post_resync()
+            if worker.resync_chain(comm_round, idx_to_device, online_devices_list, online_validators):
+                worker.post_resync()
             # perform regular ticket learning
-            lotter.ticket_learning(comm_round)
+            worker.ticket_learning(comm_round)
             # create model signature
-            # lotter.create_model_sig()
+            # worker.create_model_sig()
             # make tx
-            lotter.make_lotter_tx()
+            worker.make_worker_tx()
             # associate with validators
-            lotter.asso_validators(online_validators)
+            worker.asso_validators(online_validators)
             
         ### validators validate models and broadcast transations ###
         for validator_iter in range(len(online_validators)):
@@ -220,7 +220,7 @@ def main():
             if validator.resync_chain(comm_round, idx_to_device, online_devices_list, online_validators):
                 validator.post_resync()
             # verify tx signature
-            validator.receive_and_verify_lotter_tx_sig()
+            validator.receive_and_verify_worker_tx_sig()
             # validate model accuracy and form voting tx
             validator.validate_models_and_init_validator_tx(idx_to_device)
         

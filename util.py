@@ -117,8 +117,8 @@ def fedavg(models, device):
             param.data.copy_(param.data + weighted_param)
     return aggr_model    
 
-def fedavg_lotteryfl(models, device):
-    # print("Using LotteryFL aggregation style.")
+def fedavg_workeryfl(models, device):
+    # print("Using workeryFL aggregation style.")
     aggr_model = models[0].__class__().to(device)
     # sum all masks values
     layer_to_mask_sum = {}
