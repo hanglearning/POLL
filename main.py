@@ -3,7 +3,7 @@
 # TODO - check pruning difficulty change and reinit correctly
 
 ''' wandb.log()
-1. log latest model accuracy in test_accuracy()
+1. log latest model accuracy in test_indi_accuracy()
 2. log validation mechanism performance in check_validation_performance()
 3. log forking event at the end of main.py
 4. log stake book at the end of main.py
@@ -61,6 +61,7 @@ parser.add_argument('--wandb_username', type=str, default=None)
 parser.add_argument('--wandb_project', type=str, default=None)
 parser.add_argument('--run_note', type=str, default=None)
 parser.add_argument('--debug_validation', type=int, default=1, help='show validation process detail')
+parser.add_argument('--test_global_freq', type=int, default=1, help='frequency of logging global model individual test accuracy')
 
 ####################### federated learning setting #######################
 parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
@@ -71,7 +72,7 @@ parser.add_argument('--frac_devices_per_round', type=float, default=1.0)
 parser.add_argument('--epochs', type=int, default=5)
 parser.add_argument('--batch_size', type=int, default=10)
 parser.add_argument('--lr', type=float, default=0.01)
-parser.add_argument('--optimizer', type=str, default="SGD", help="SGD|Adam")
+parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
 parser.add_argument('--n_samples', type=int, default=20)
 parser.add_argument('--n_class', type=int, default=3)
 parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
@@ -92,16 +93,16 @@ parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increas
 
 ####################### blockchain setting #######################
 parser.add_argument('--n_devices', type=int, default=6)
-parser.add_argument('--worker_reward', type=int, default=10)
-parser.add_argument('--validator_reward', type=int, default=8)
-parser.add_argument('--win_val_reward', type=int, default=15) # generally, we encourage being a worker, but being a validator you can hit the jackpot to be the winning validator and gain the most rewards.
+parser.add_argument('--w_reward', type=int, default=10)
+parser.add_argument('--v_reward', type=int, default=8)
+parser.add_argument('--win_v_reward', type=int, default=15) # generally, we encourage being a worker, but being a validator you can hit the jackpot to be the winning validator and gain the most rewards.
 
-# parser.add_argument('--validator_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
+# parser.add_argument('--v_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
 # parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted worker txes have invalid model_sigs, the block will be dropped")
 parser.add_argument('--n_workers', type=str, default='3', 
                     help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of workers and validators are random from round to round')
-parser.add_argument('--validator_portion', type=float, default=0.5,
-                    help='this determins how many validators should one worker send txs to. e.g., there are 6 validators in the network and validator_portion = 0.5, then one worker will send tx to 6*0.5=3 validators')
+parser.add_argument('--v_portion', type=float, default=0.5,
+                    help='this determins how many validators should one worker send txs to. e.g., there are 6 validators in the network and v_portion = 0.5, then one worker will send tx to 6*0.5=3 validators')
 parser.add_argument('--check_signature', type=int, default=0, 
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
 parser.add_argument('--network_stability', type=float, default=1.0, 
@@ -121,7 +122,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime(f"los_{args.n_workers}_vas_{args.n_devices - int(args.n_workers)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_%m%d%Y_%H%M%S")
+    wandb.run.name = datetime.now().strftime(f"wos_{args.n_workers}_vas_{int((args.n_devices - int(args.n_workers)) * args.v_portion)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_opt_{args.optimizer}_%m%d%Y_%H%M%S")
     wandb.config.update(args)
     
     ######## initiate devices ########
@@ -253,9 +254,11 @@ def main():
             device.check_validation_performance(winning_block, idx_to_device, comm_round)
         
         ### all devices test latest models ###
-
-        for device in devices_list:
-            device.test_accuracy(comm_round)
+        if comm_round % args.test_global_freq == 0:
+            # this process is slow, so added frequency control
+            for device in devices_list:
+                device.test_indi_accuracy(comm_round)
+            device.test_global_accuracy(comm_round)
 
         # import pdb
         # pdb.set_trace()

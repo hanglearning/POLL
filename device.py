@@ -181,7 +181,7 @@ class Device():
         self.prune()
         self.reinit_params()
         self.train()
-        # self.test_accuracy(comm_round)
+        # self.test_indi_accuracy(comm_round)
         # if malicious, introduce noise
         if self._is_malicious:
             self.poison_model()
@@ -351,7 +351,7 @@ class Device():
         self._worker_tx = worker_tx
     
     def asso_validators(self, validators):
-        n_validators_to_send = int(len(validators) * self.args.validator_portion)
+        n_validators_to_send = int(len(validators) * self.args.v_portion)
         random.shuffle(validators)
         for validator in validators:
             if validator.is_online:
@@ -749,33 +749,39 @@ class Device():
                 
         # update stake info
         for to_reward_worker in to_reward_workers:
-            self.stake_book[to_reward_worker] += self.args.worker_reward
+            self.stake_book[to_reward_worker] += self.args.w_reward
         
         winning_validator = block.produced_by
         for validator in block.participating_validators:
             if validator == winning_validator:
-                self.stake_book[validator] += self.args.win_val_reward
+                self.stake_book[validator] += self.args.win_v_reward
             else:
-                self.stake_book[validator] += self.args.validator_reward
+                self.stake_book[validator] += self.args.v_reward
         
         # used to record if a block is produced by a malicious device
         self.has_appended_block = True
         # update global ticket model
         self.model = deepcopy(block.global_ticket_model)
         
-    def test_accuracy(self, comm_round):
-        global_acc = test_by_data_set(self.model,
-                self.global_test_loader,
-                self.args.dev_device,
-                self.args.test_verbose)['Accuracy'][0]
+    def test_indi_accuracy(self, comm_round):
         indi_acc = test_by_data_set(self.model,
                 self._test_loader,
                 self.args.dev_device,
                 self.args.test_verbose)['Accuracy'][0]
         
-        print(f"\n{self.role}", self.idx,"\nglobal_acc", round(global_acc, 2), "indi_acc", round(indi_acc, 2))
+        print(f"\n{self.role}_{self.idx}", "indi_acc", round(indi_acc, 2))
         
-        wandb.log({"comm_round": comm_round, f"{self.idx}_global_acc": round(global_acc, 2), f"{self.idx}_indi_acc": round(indi_acc, 2)})
+        wandb.log({"comm_round": comm_round, f"{self.idx}_indi_acc": round(indi_acc, 2)})
         
-        return global_acc, indi_acc
-        
+        return indi_acc
+
+    def test_global_accuracy(self, comm_round):
+        global_acc = test_by_data_set(self.model,
+                self.global_test_loader,
+                self.args.dev_device,
+                self.args.test_verbose)['Accuracy'][0]
+        print(f"\nglobal_acc: {global_acc}")
+
+        wandb.log({"comm_round": comm_round, "global_acc": round(global_acc, 2)})
+
+        return global_acc
