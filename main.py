@@ -61,7 +61,7 @@ parser.add_argument('--wandb_username', type=str, default=None)
 parser.add_argument('--wandb_project', type=str, default=None)
 parser.add_argument('--run_note', type=str, default=None)
 parser.add_argument('--debug_validation', type=int, default=1, help='show validation process detail')
-parser.add_argument('--test_global_freq', type=int, default=1, help='frequency of logging global model individual test accuracy')
+parser.add_argument('--report_model_acc_freq', type=int, default=1, help='frequency of logging global model individual and global test accuracy')
 
 ####################### federated learning setting #######################
 parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
@@ -254,7 +254,7 @@ def main():
             device.check_validation_performance(winning_block, idx_to_device, comm_round)
         
         ### all devices test latest models ###
-        if comm_round % args.test_global_freq == 0:
+        if comm_round == 1 and comm_round % args.report_model_acc_freq == 0:
             # this process is slow, so added frequency control
             for device in devices_list:
                 device.test_indi_accuracy(comm_round)
