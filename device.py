@@ -723,12 +723,13 @@ class Device():
         ''' TODO
         1. Check global sparsity meets pruning difficulty
         2. Check model signature
-        3. Record participating validators by verifying pos, dub_pos and neg voted txes by verifying '8 v_sign' in validator_tx
+        3. Record participating validators by verifying pos, dub_pos and neg voted txes by verifying '8 v_sign' in validator_tx (validator verifies other validators don't cheat on workers' signatures)
 
         promote the idea of proof-of-useful-learning -
         1. neural network training SGD is random, and the model evolvement is represented in the stake book
         2. network pruning is also random given SGD is random, and it can be verified by checking global sparsity and model signature
-        3. when chain resync, PoW re-syncs to the longest chain, while we resync to the chain of the current highest stake holder validator. Not easy to hack
+        3. when chain resync, PoW re-syncs to the longest chain, while we resync to the chain of the current highest stake holder validator. Not easy to hack. 
+        (4. role-switching is a protection, since resyncing can only resync to validator.)
         '''
         return True
 
