@@ -502,7 +502,7 @@ class Device():
         # debug the validation mechanism
         if self.args.debug_validation:
             user_labels_counter_dict = dict(collections.Counter(user_labels_counter))
-            print({k: v for k, v in sorted(user_labels_counter_dict.items(), key=lambda item: item[1], reverse=True)})
+            print("Worker labels total count", {k: v for k, v in sorted(user_labels_counter_dict.items(), key=lambda item: item[1], reverse=True)})
             print("Unique labels", len(user_labels_counter_dict))
         
         self._validator_txs = validator_txes
@@ -558,7 +558,12 @@ class Device():
                 neg_voted_txes[worker_idx].extend(corresponding_validators_txes)
                 del duplicated_pos_voted_txes[worker_idx]
         # self._final_ticket_model = fedavg_workeryfl(final_models_to_fedavg, self.args.dev_device)
-        self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
+        if final_models_to_fedavg:
+            self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
+        else:
+            # no local models have passed the validation, use the latest global model
+            # take caution of shallow copy
+            self._final_ticket_model = self.model
         # print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
         # print()
         self._pos_voted_txes = pos_voted_txes
