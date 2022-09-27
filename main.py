@@ -224,7 +224,7 @@ def main():
             validator.receive_and_verify_worker_tx_sig()
             # validate model accuracy and form voting tx
             validator.validate_models_and_init_validator_tx(idx_to_device)
-            validator.validate_models_and_init_validator_tx_VBFL()
+            validator.validate_models_and_init_validator_tx_VBFL(comm_round, idx_to_device)
         
         ### validators perform FedAvg and produce blocks ###
         for validator_iter in range(len(online_validators)):

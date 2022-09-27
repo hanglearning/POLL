@@ -391,53 +391,44 @@ class Device():
         validator_tx['tx_sig'] = self.sign_msg(str(validator_tx)) # will be removed in final block
         return validator_tx
 
-    def validate_models_and_init_validator_tx_VBFL(self):
+    def validate_models_and_init_validator_tx_VBFL(self, comm_round, idx_to_device):
 
         '''
         1. Validator one-epoch update from the latest global model and get training accuracy
         2. Test worker's model on its training data
         3. Compare with threshold
         '''
-        def evaluate_acc(eval_model, eval_data=self._train_loader):
-            with torch.no_grad():
-                sum_accu = 0
-                num = 0
-                for data, label in eval_data:
-                    data, label = data.to(self.dev_device), label.to(self.dev_device)
-                    preds = eval_model(data)
-                    preds = torch.argmax(preds, dim=1)
-                    sum_accu += (preds == label).float().mean()
-                    num += 1
-                    
-                return sum_accu / num
-
         # 1. Validator one-epoch update from the latest global model and get training accuracy
-        temp_validator_model = copy.deepcopy(self.model)
+        temp_validator_model = deepcopy(self.model)
         # one epoch of training
-        if self.args.optimizer == "Adam":
-            opti = torch.optim.Adam(lr=self.args.lr, params=temp_validator_model.parameters())
-        elif self.args.optimizer == "SGD":
-            opti = torch.optim.SGD(lr=self.args.lr, params=temp_validator_model.parameters())
-        for data, label in self._train_loader:
-            data, label = data.to(self.dev_device), label.to(self.dev_device)
-            preds = temp_validator_model(data)
-            loss = self.loss_func(preds, label)
-            loss.backward()
-            opti.step()
-            opti.zero_grad()
+        util_train(temp_validator_model,
+                    self._train_loader,
+                    self.args.optimizer,
+                    self.args.lr,
+                    self.args.dev_device,
+                    self.args.train_verbose)
         # get validator's accuracy
-        self.validator_local_accuracy = evaluate_acc(temp_validator_model)
+        self.validator_local_accuracy = test_by_data_set(temp_validator_model,
+                self._train_loader,
+                self.args.dev_device,
+                self.args.test_verbose)['Accuracy'][0]
 
         # 2. Test worker's model on its training data
         worker_idx_to_acc = {}
         for worker_idx, worker_tx in self._verified_worker_txs.items():
             worker_model = worker_tx['model']
-            worker_idx_to_acc[worker_idx] = evaluate_acc(worker_model)
+            worker_idx_to_acc[worker_idx] = test_by_data_set(worker_model,
+                self._train_loader,
+                self.args.dev_device,
+                self.args.test_verbose)['Accuracy'][0]
         
         # 3. Compare with threshold and vote
         print("validator_local_accuracy", self.validator_local_accuracy)
         for worker_idx, eval_acc in worker_idx_to_acc.items():
-            print("For worker", worker_idx, f"{self.validator_local_accuracy} - {eval_acc} = {self.validator_local_accuracy - eval_acc}")
+            identity = "malicious" if idx_to_device[worker_idx]._is_malicious else "legit"
+            print("For worker", worker_idx, identity, f"{eval_acc} - {self.validator_local_accuracy} = {eval_acc - self.validator_local_accuracy}")
+            wandb.log({"comm_round": comm_round, f"v_{self.idx}_{self._user_labels}_to_w_{worker_idx}_{idx_to_device[worker_idx]._user_labels}_{identity}": eval_acc - self.validator_local_accuracy})
+
 
     def validate_models_and_init_validator_tx(self, idx_to_device):
 
