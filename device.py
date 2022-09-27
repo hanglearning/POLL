@@ -391,6 +391,54 @@ class Device():
         validator_tx['tx_sig'] = self.sign_msg(str(validator_tx)) # will be removed in final block
         return validator_tx
 
+    def validate_models_and_init_validator_tx_VBFL(self):
+
+        '''
+        1. Validator one-epoch update from the latest global model and get training accuracy
+        2. Test worker's model on its training data
+        3. Compare with threshold
+        '''
+        def evaluate_acc(eval_model, eval_data=self._train_loader):
+            with torch.no_grad():
+                sum_accu = 0
+                num = 0
+                for data, label in eval_data:
+                    data, label = data.to(self.dev_device), label.to(self.dev_device)
+                    preds = eval_model(data)
+                    preds = torch.argmax(preds, dim=1)
+                    sum_accu += (preds == label).float().mean()
+                    num += 1
+                    
+                return sum_accu / num
+
+        # 1. Validator one-epoch update from the latest global model and get training accuracy
+        temp_validator_model = copy.deepcopy(self.model)
+        # one epoch of training
+        if self.args.optimizer == "Adam":
+            opti = torch.optim.Adam(lr=self.args.lr, params=temp_validator_model.parameters())
+        elif self.args.optimizer == "SGD":
+            opti = torch.optim.SGD(lr=self.args.lr, params=temp_validator_model.parameters())
+        for data, label in self._train_loader:
+            data, label = data.to(self.dev_device), label.to(self.dev_device)
+            preds = temp_validator_model(data)
+            loss = self.loss_func(preds, label)
+            loss.backward()
+            opti.step()
+            opti.zero_grad()
+        # get validator's accuracy
+        self.validator_local_accuracy = evaluate_acc(temp_validator_model)
+
+        # 2. Test worker's model on its training data
+        worker_idx_to_acc = {}
+        for worker_idx, worker_tx in self._verified_worker_txs.items():
+            worker_model = worker_tx['model']
+            worker_idx_to_acc[worker_idx] = evaluate_acc(worker_model)
+        
+        # 3. Compare with threshold and vote
+        print("validator_local_accuracy", self.validator_local_accuracy)
+        for worker_idx, eval_acc in worker_idx_to_acc.items():
+            print("For worker", worker_idx, f"{self.validator_local_accuracy} - {eval_acc} = {self.validator_local_accuracy - eval_acc}")
+
     def validate_models_and_init_validator_tx(self, idx_to_device):
 
         # Assume workers are honest in providing their model signatures by summing up rows and columns. This attack is so easy to spot.
