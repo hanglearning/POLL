@@ -705,10 +705,16 @@ class Device():
                 incorrect_neg += 1
         print(f"{incorrect_pos} / {len(block.pos_voted_txes)} are malicious but used.")
         print(f"{incorrect_neg} / {len(block.neg_voted_txes)} are legit but not used.")
-        # incorrect_rate = (incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.neg_voted_txes))
-        incorrect_rate = incorrect_pos/len(block.pos_voted_txes)
+        incorrect_rate = (incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.neg_voted_txes))
+        try:
+            false_positive_rate = incorrect_pos/len(block.pos_voted_txes)
+        except ZeroDivisionError:
+            # no models were voted positively
+            false_positive_rate = -0.1
+        print(f"False positive rate: {false_positive_rate:.2%}")    
         print(f"Incorrect rate: {incorrect_rate:.2%}")
         # record validation mechanism performance
+        wandb.log({"comm_round": comm_round, f"{self.idx}_block_false_positive_rate": round(false_positive_rate, 2)})
         wandb.log({"comm_round": comm_round, f"{self.idx}_block_incorrect_rate": round(incorrect_rate, 2)})
 
     
