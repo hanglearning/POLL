@@ -83,6 +83,7 @@ parser.add_argument('--rate_unbalance', type=float, default=1.0)
 parser.add_argument('--num_workers', type=int, default=0)
 # above for DataLoaders
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug')
+parser.add_argument('--attack_level', type=float, default=0.5, help='Used in validate_models_attack_level_based() and produce_global_model_attack_level_based()')
 
 ####################### blockchained pruning setting #######################
 parser.add_argument('--target_spar', type=float, default=0.8)
@@ -95,13 +96,13 @@ parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increas
 parser.add_argument('--n_devices', type=int, default=6)
 parser.add_argument('--w_reward', type=int, default=10)
 parser.add_argument('--v_reward', type=int, default=8)
-parser.add_argument('--win_v_reward', type=int, default=15) # generally, we encourage being a worker, but being a validator you can hit the jackpot to be the winning validator and gain the most rewards.
+parser.add_argument('--win_v_reward', type=int, default=12) # generally, we encourage being a worker, but being a validator you can hit the jackpot to be the winning validator and gain the most rewards.
 
 # parser.add_argument('--v_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
 # parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted worker txes have invalid model_sigs, the block will be dropped")
 parser.add_argument('--n_workers', type=str, default='3', 
                     help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of workers and validators are random from round to round')
-parser.add_argument('--v_portion', type=float, default=0.5,
+parser.add_argument('--v_portion', type=float, default=1,
                     help='this determins how many validators should one worker send txs to. e.g., there are 6 validators in the network and v_portion = 0.5, then one worker will send tx to 6*0.5=3 validators')
 parser.add_argument('--check_signature', type=int, default=0, 
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
@@ -223,8 +224,9 @@ def main():
             # verify tx signature
             validator.receive_and_verify_worker_tx_sig()
             # validate model accuracy and form voting tx
-            validator.validate_models_and_init_validator_tx(idx_to_device)
-            validator.validate_models_and_init_validator_tx_VBFL(comm_round, idx_to_device)
+            validator.validate_models_attack_level_based(idx_to_device)
+            #validator.validate_models_and_init_validator_tx(idx_to_device)
+            #validator.validate_models_and_init_validator_tx_VBFL(comm_round, idx_to_device)
         
         ### validators perform FedAvg and produce blocks ###
         for validator_iter in range(len(online_validators)):
@@ -232,7 +234,8 @@ def main():
             # validate exchange tx and validation results
             validator.exchange_and_verify_validator_tx(online_validators)
             # validator produces global ticket model
-            validator.produce_global_model()
+            # validator.produce_global_model()
+            validator.produce_global_model_attack_level_based()
             # validator produce block
             block = validator.produce_block()
             # validator broadcasts block

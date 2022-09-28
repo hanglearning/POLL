@@ -429,6 +429,30 @@ class Device():
             print("For worker", worker_idx, identity, f"{eval_acc} - {self.validator_local_accuracy} = {eval_acc - self.validator_local_accuracy}")
             wandb.log({"comm_round": comm_round, f"v_{self.idx}_{self._user_labels}_to_w_{worker_idx}_{idx_to_device[worker_idx]._user_labels}_{identity}": eval_acc - self.validator_local_accuracy})
 
+    def validate_models_attack_level_based(self, idx_to_device):
+        
+        pos_vote_models_count = round(len(self._verified_worker_txs) * self.args.attack_level)
+        # Test worker's model on its training data
+        worker_idx_to_acc = {}
+        for worker_idx, worker_tx in self._verified_worker_txs.items():
+            worker_model = worker_tx['model']
+            worker_idx_to_acc[worker_idx] = test_by_data_set(worker_model,
+                self._train_loader,
+                self.args.dev_device,
+                self.args.test_verbose)['Accuracy'][0]
+        worker_model_acc_top_to_low = [w_idx for w_idx, acc in sorted(worker_idx_to_acc.items(), key=lambda item: item[1], reverse=True)]
+
+        validator_txes = []
+        # positive votes
+        pos_workers = worker_model_acc_top_to_low[:pos_vote_models_count]
+        for pos_worker in pos_workers:
+            validator_tx = self.form_validator_tx(pos_worker, 1)
+            validator_txes.append(validator_tx)
+        # negative votes
+        for neg_worker in set(worker_model_acc_top_to_low) - set(pos_workers):
+            validator_tx = self.form_validator_tx(neg_worker, 0)
+            validator_txes.append(validator_tx)
+        self._validator_txs = validator_txes
 
     def validate_models_and_init_validator_tx(self, idx_to_device):
 
@@ -611,6 +635,48 @@ class Device():
         # no way to ensure that the validator chooses the model and model_sig within the same tx, but if a worker doesn't send different models, there would be no issue. Validator also is responsible to check for the model_sig. If invalid, should drop before the block. Once model_sig found invalid in the block, the whole block becomes invalid and no one will be rewarded, so validators are not incentived to select a model_sig from a different validator_tx that has the same model 
         self._participating_validators = participating_validators
 
+    def produce_global_model_attack_level_based(self):
+        final_models_to_fedavg = []
+        pos_voted_txes = {} # worker_idx to its validator tx, used txes in block, verify participating validators and model_sig
+        duplicated_pos_voted_txes = {} # verify participating validators
+        neg_voted_txes = {} # unused txes in block, verify participating validators and model_sig
+        participating_validators = set()
+        for worker_idx, corresponding_validators_txes in self._received_validator_txs.items():
+            neg_voted_txes[worker_idx] = []
+            # validators do not check if workers send different txes
+            duplicated_pos_voted_txes[worker_idx] = []
+            # if worker_idx in self._black_list: # gave up blacklist
+            #     if self._black_list[worker_idx] >= self.args.kick_out_rounds:
+            #         continue
+            model_votes = sum([validator_tx['7. validator_vote'] for validator_tx in corresponding_validators_txes])
+            participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes]))
+            if model_votes >= int(len(corresponding_validators_txes) * self.args.attack_level):
+                # random.choice is necessary because in this design one worker can send different txs to different validators. can change to use stake_book to determine which validator's tx to pick
+                chosen_tx = random.choice(corresponding_validators_txes)
+                corresponding_validators_txes.remove(chosen_tx)
+                duplicated_pos_voted_txes[worker_idx].extend(corresponding_validators_txes)
+                final_models_to_fedavg.append(chosen_tx['3. worker_model'])
+                pos_voted_txes[worker_idx] = chosen_tx
+                del neg_voted_txes[worker_idx]
+            else:
+                neg_voted_txes[worker_idx].extend(corresponding_validators_txes)
+                del duplicated_pos_voted_txes[worker_idx]
+        # self._final_ticket_model = fedavg_workeryfl(final_models_to_fedavg, self.args.dev_device)
+        if final_models_to_fedavg:
+            self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
+        else:
+            # no local models have passed the validation, use the latest global model
+            # take caution of shallow copy
+            self._final_ticket_model = self.model
+        # print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
+        # print()
+        self._pos_voted_txes = pos_voted_txes
+        self._dup_pos_voted_txes = duplicated_pos_voted_txes
+        self._neg_voted_txes = neg_voted_txes
+        # no way to ensure that the validator chooses the model and model_sig within the same tx, but if a worker doesn't send different models, there would be no issue. Validator also is responsible to check for the model_sig. If invalid, should drop before the block. Once model_sig found invalid in the block, the whole block becomes invalid and no one will be rewarded, so validators are not incentived to select a model_sig from a different validator_tx that has the same model 
+        self._participating_validators = participating_validators
+
+
     def remove_model_and_vtx_sig(self):
         
         def remove_from_single_tx(v_tx):
@@ -639,7 +705,8 @@ class Device():
                 incorrect_neg += 1
         print(f"{incorrect_pos} / {len(block.pos_voted_txes)} are malicious but used.")
         print(f"{incorrect_neg} / {len(block.neg_voted_txes)} are legit but not used.")
-        incorrect_rate = (incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.neg_voted_txes))
+        # incorrect_rate = (incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.neg_voted_txes))
+        incorrect_rate = incorrect_pos/len(block.pos_voted_txes)
         print(f"Incorrect rate: {incorrect_rate:.2%}")
         # record validation mechanism performance
         wandb.log({"comm_round": comm_round, f"{self.idx}_block_incorrect_rate": round(incorrect_rate, 2)})
