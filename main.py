@@ -264,7 +264,7 @@ def main():
             device.check_validation_performance(winning_block, idx_to_device, comm_round)
         
         ### all devices test latest models ###
-        if comm_round == 1 and comm_round % args.report_model_acc_freq == 0:
+        if comm_round == 1 or comm_round % args.report_model_acc_freq == 0:
             # this process is slow, so added frequency control
             for device in devices_list:
                 device.test_indi_accuracy(comm_round)
