@@ -83,6 +83,8 @@ parser.add_argument('--rate_unbalance', type=float, default=1.0)
 parser.add_argument('--num_workers', type=int, default=0)
 # above for DataLoaders
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug')
+
+parser.add_argument('--validation_method', type=int, default=2, help='1 - shapley value based, 2 - attack level based')
 parser.add_argument('--attack_level', type=float, default=0.5, help='Used in validate_models_attack_level_based() and produce_global_model_attack_level_based()')
 
 ####################### blockchained pruning setting #######################
@@ -123,7 +125,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime(f"wos_{args.n_workers}_vas_{int((args.n_devices - int(args.n_workers)) * args.v_portion)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_opt_{args.optimizer}_%m%d%Y_%H%M%S")
+    wandb.run.name = datetime.now().strftime(f"method_{args.validation_method}_wos_{args.n_workers}_vas_{int((args.n_devices - int(args.n_workers)) * args.v_portion)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_opt_{args.optimizer}_%m%d%Y_%H%M%S")
     wandb.config.update(args)
     
     ######## initiate devices ########
@@ -224,8 +226,10 @@ def main():
             # verify tx signature
             validator.receive_and_verify_worker_tx_sig()
             # validate model accuracy and form voting tx
-            validator.validate_models_attack_level_based(idx_to_device)
-            #validator.validate_models_and_init_validator_tx(idx_to_device)
+            if args.validation_method == 1:
+                validator.validate_models_and_init_validator_tx(idx_to_device)
+            elif args.validation_method == 2:
+                validator.validate_models_attack_level_based(idx_to_device)
             #validator.validate_models_and_init_validator_tx_VBFL(comm_round, idx_to_device)
         
         ### validators perform FedAvg and produce blocks ###
@@ -234,8 +238,10 @@ def main():
             # validate exchange tx and validation results
             validator.exchange_and_verify_validator_tx(online_validators)
             # validator produces global ticket model
-            # validator.produce_global_model()
-            validator.produce_global_model_attack_level_based()
+            if args.validation_method == 1:
+                validator.produce_global_model()
+            elif args.validation_method == 2:
+                validator.produce_global_model_attack_level_based()
             # validator produce block
             block = validator.produce_block()
             # validator broadcasts block
