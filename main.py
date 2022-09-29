@@ -76,7 +76,7 @@ parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
 parser.add_argument('--n_samples', type=int, default=20)
 parser.add_argument('--n_class', type=int, default=3)
 parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
-parser.add_argument('--malicious_validators', type=int, default=0, help="malicious validators will disturb votes or randomly drop legitimate worker transactions")
+parser.add_argument('--mal_vs', type=int, default=1, help="malicious validators will disturb votes (or later add randomly drop legitimate worker transactions)")
 parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
 # below for DataLoaders
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
@@ -169,17 +169,33 @@ def main():
             n_workers = int(args.n_workers)
                     
         random.shuffle(devices_list)
+        # winning validator cannot be a validator in the next round
+        # 1. May result in stake monopoly
+        # 2. since chain resyncing chooses the highest stakeholding validator, if the winning validator is compromised, the attacker controls the whole chain
         online_workers = []
         online_validators = []
-        for device_iter in range(len(devices_list)):
+        role_assign_list = copy(devices_list)
+        
+        # assign win_validators to workers
+        for device_iter in range(len(role_assign_list)):
+            if role_assign_list[device_iter].role == 'win_validator':
+                role_assign_list[device_iter].role = 'worker'
+                n_workers -= 1
+                if role_assign_list[device_iter].is_online():
+                    online_workers.append(role_assign_list[device_iter])
+        
+        for win_val_worker in online_workers:
+            role_assign_list.remove(win_val_worker)
+
+        for device_iter in range(len(role_assign_list)):
             if device_iter < n_workers:
-                devices_list[device_iter].role = 'worker'
-                if devices_list[device_iter].is_online():
-                    online_workers.append(devices_list[device_iter])
+                role_assign_list[device_iter].role = 'worker'
+                if role_assign_list[device_iter].is_online():
+                    online_workers.append(role_assign_list[device_iter])
             else:
-                devices_list[device_iter].role = 'validator'
-                if devices_list[device_iter].is_online():
-                    online_validators.append(devices_list[device_iter])
+                role_assign_list[device_iter].role = 'validator'
+                if role_assign_list[device_iter].is_online():
+                    online_validators.append(role_assign_list[device_iter])
         
         online_devices_list = online_workers + online_validators
         
@@ -246,7 +262,7 @@ def main():
             block = validator.produce_block()
             # validator broadcasts block
             validator.broadcast_block(online_devices_list, block)
-            
+        
         ### all ONLINE devices process received blocks ###
         for device in online_devices_list:
             # pick winning block based on PoS
@@ -255,6 +271,8 @@ def main():
                 # no winning_block found, perform chain_resync next round
                 continue
             # check block
+            # record all winning validators (due to forking, may be more than 1) and assign them as workers the next round
+            idx_to_device[winning_block.produced_by].role = "win_validator"
             if not device.check_block_when_appending(winning_block):
                 # block check failed, perform chain_resync next round
                 continue
@@ -299,6 +317,8 @@ def main():
             
         #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
         #     print(f"Length: {device.blockchain.get_chain_length()}")
+
+        
         
         
 

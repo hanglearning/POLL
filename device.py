@@ -370,7 +370,7 @@ class Device():
         for worker in self._associated_workers:
             if self.verify_tx_sig(worker._worker_tx):
                 # TODO - check sig of model_sig
-                # if self.args.malicious_validators and self._is_malicious:
+                # if self.args.mal_vs and self._is_malicious:
                 #     continue
                 self._verified_worker_txs[worker.idx] = worker._worker_tx
             else:
@@ -446,11 +446,17 @@ class Device():
         # positive votes
         pos_workers = worker_model_acc_top_to_low[:pos_vote_models_count]
         for pos_worker in pos_workers:
-            validator_tx = self.form_validator_tx(pos_worker, 1)
+            if self.args.mal_vs and self._is_malicious:
+                validator_tx = self.form_validator_tx(pos_worker, 0)
+            else:
+                validator_tx = self.form_validator_tx(pos_worker, 1)
             validator_txes.append(validator_tx)
         # negative votes
         for neg_worker in set(worker_model_acc_top_to_low) - set(pos_workers):
-            validator_tx = self.form_validator_tx(neg_worker, 0)
+            if self.args.mal_vs and self._is_malicious:
+                validator_tx = self.form_validator_tx(pos_worker, 1)
+            else:
+                validator_tx = self.form_validator_tx(neg_worker, 0)
             validator_txes.append(validator_tx)
         self._validator_txs = validator_txes
 
@@ -481,7 +487,7 @@ class Device():
                 # skip model below the current pruning difficulty
                 print(f"worker {worker_idx}'s prune amount {pruned_amount} is less than current blockchain's prune difficulty {prune_diff}. Model skipped.")
                 continue
-            # if self.args.malicious_validators and self._is_malicious:
+            # if self.args.mal_vs and self._is_malicious:
                 # drop legitimate model
                 # even malicious validator cannot pass the model with invalid sparsity because it'll be detected by other validators
                 # continue
@@ -547,7 +553,7 @@ class Device():
                         judgement = "WRONG"
             
                 # disturb vote
-                if self.args.malicious_validators and self._is_malicious:
+                if self.args.mal_vs and self._is_malicious:
                     model_vote = model_vote * -1
                 
                 # turn off validation, pass all models
@@ -582,7 +588,7 @@ class Device():
                 if not self.verify_tx_sig(tx):
                     continue
                     # TODO - record to black list
-                # if self.args.malicious_validators and self._is_malicious:
+                # if self.args.mal_vs and self._is_malicious:
                 #     # randomly drop tx
                 #     if random.random() < 0.5:
                 #         continue
@@ -783,7 +789,7 @@ class Device():
                         winning_validator = picked_block.produced_by
                     else:
                         continue
-                if self.role == 'validator':
+                if 'validator' in self.role:
                     winning_validator = self.idx
                     picked_block = self.produced_block                
                 print(f"\n{self.role} {self.idx} {self._user_labels} picks {winning_validator}'s {idx_to_device[winning_validator]._user_labels} block.")
