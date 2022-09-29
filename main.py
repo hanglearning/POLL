@@ -125,7 +125,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime(f"method_{args.validation_method}_seed_{args.seed}_wos_{args.n_workers}_vas_{int((args.n_devices - int(args.n_workers)) * args.v_portion)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_opt_{args.optimizer}_%m%d%Y_%H%M%S")
+    wandb.run.name = datetime.now().strftime(f"method_{args.validation_method}_mal_vs_{args.mal_vs}_seed_{args.seed}_wos_{args.n_workers}_vas_{int((args.n_devices - int(args.n_workers)) * args.v_portion)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_opt_{args.optimizer}_%m%d%Y_%H%M%S")
     wandb.config.update(args)
     
     ######## initiate devices ########
