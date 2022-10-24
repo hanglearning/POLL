@@ -61,7 +61,7 @@ parser.add_argument('--wandb_username', type=str, default=None)
 parser.add_argument('--wandb_project', type=str, default=None)
 parser.add_argument('--run_note', type=str, default=None)
 parser.add_argument('--debug_validation', type=int, default=1, help='show validation process detail')
-parser.add_argument('--report_model_acc_freq', type=int, default=1, help='frequency of logging global model individual and global test accuracy')
+parser.add_argument('--log_model_acc_freq', type=int, default=1, help='frequency of logging global model individual and global test accuracy')
 
 ####################### federated learning setting #######################
 parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
@@ -76,16 +76,31 @@ parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
 parser.add_argument('--n_samples', type=int, default=20)
 parser.add_argument('--n_class', type=int, default=3)
 parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
-parser.add_argument('--mal_vs', type=int, default=1, help="malicious validators will disturb votes (or later add randomly drop legitimate worker transactions)")
+parser.add_argument('--mal_vs', type=int, default=0, help="malicious validators will disturb votes (or later add randomly drop legitimate worker transactions)")
 parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
 # below for DataLoaders
 parser.add_argument('--rate_unbalance', type=float, default=1.0)
 parser.add_argument('--num_workers', type=int, default=0)
 # above for DataLoaders
-parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug')
 
-parser.add_argument('--validation_method', type=int, default=2, help='1 - shapley value based, 2 - attack level based')
-parser.add_argument('--attack_level', type=float, default=0.5, help='Used in validate_models_attack_level_based() and produce_global_model_attack_level_based()')
+
+####################### validation and rewards setting #######################
+
+parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
+
+parser.add_argument('--validation_method', type=int, default=2, help='1 - pure shapley value based, 2 - filter valuation, 3 - attack level based, 4 - greedy soup inspired')
+parser.add_argument('--attack_level', type=float, default=0.5, help='Used in validation method 1~3 to determine how many models to use for aggregation (if not vote) or vote 1 (if vote)')
+parser.add_argument('--z_counts', type=int, default=3, help='Counts of zscores, used in standard deviation based validation (method 2)')
+parser.add_argument('--vote', type=int, default=1, help='If set to 1, validators will exchange and aggregate voting methods. If not, validator will just choose its filtered out models for aggregation and broadcast a block - the block_fork method')
+
+parser.add_argument('--reward_method', type=int, default='2', help='1 - reward based on shapley acc diff, 2 - reward by individual test acc') # V1 - has to choose R1, V3 - has to choose R2, others can choose either. Used when reward, choose winining val, and resync chain 
+
+parser.add_argument('--oppo_v', type=int, default=1, help="opportunistic validator - simulate that when a device sees its stake top 1, choose its role as validator")
+
+# parser.add_argument('--v_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
+# parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted worker txes have invalid model_sigs, the block will be dropped")
+
+
 
 ####################### blockchained pruning setting #######################
 parser.add_argument('--target_spar', type=float, default=0.8)
@@ -96,12 +111,7 @@ parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increas
 
 ####################### blockchain setting #######################
 parser.add_argument('--n_devices', type=int, default=6)
-parser.add_argument('--w_reward', type=int, default=10)
-parser.add_argument('--v_reward', type=int, default=8)
-parser.add_argument('--win_v_reward', type=int, default=12) # generally, we encourage being a worker, but being a validator you can hit the jackpot to be the winning validator and gain the most rewards.
 
-# parser.add_argument('--v_reward_punishment', type=int, default=5, help="if an unsed validator tx found being used in block, cut the winning validator's reward by this much, incrementally")
-# parser.add_argument('--block_drop_threshold', type=float, default=0.5, help="if this portion of positively voted worker txes have invalid model_sigs, the block will be dropped")
 parser.add_argument('--n_workers', type=str, default='3', 
                     help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of workers and validators are random from round to round')
 parser.add_argument('--v_portion', type=float, default=1,
@@ -116,6 +126,13 @@ parser.add_argument('--network_stability', type=float, default=1.0,
 
 args = parser.parse_args()
 
+if args.validation_method == 1:
+    args.reward_method = 1
+elif args.validation_method == 3:
+    args.reward_method = 2
+else:
+    pass
+
 def main(): 
 
     seed_everything(seed=args.seed, workers=True)
@@ -125,7 +142,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime(f"method_{args.validation_method}_mal_vs_{args.mal_vs}_seed_{args.seed}_wos_{args.n_workers}_vas_{int((args.n_devices - int(args.n_workers)) * args.v_portion)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_opt_{args.optimizer}_%m%d%Y_%H%M%S")
+    wandb.run.name = datetime.now().strftime(f"method_{args.validation_method}_mal_vs_{args.mal_vs}_seed_{args.seed}_wos_{args.n_workers}_vas_{int((args.n_devices - int(args.n_workers)) * args.v_portion)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_reward_method_{args.reward_method}_opt_{args.optimizer}_%m%d%Y_%H%M%S")
     wandb.config.update(args)
     
     ######## initiate devices ########
@@ -176,16 +193,14 @@ def main():
         online_validators = []
         role_assign_list = copy(devices_list)
         
-        # assign win_validators to workers
-        for device_iter in range(len(role_assign_list)):
-            if role_assign_list[device_iter].role == 'win_validator':
-                role_assign_list[device_iter].role = 'worker'
-                n_workers -= 1
-                if role_assign_list[device_iter].is_online():
-                    online_workers.append(role_assign_list[device_iter])
-        
-        for win_val_worker in online_workers:
-            role_assign_list.remove(win_val_worker)
+        # assign devices with top stake to validators
+        if args.oppo_v and comm_round != 1:
+            for device in role_assign_list:
+                top_stake_device_idx = [idx for idx, stake in sorted(device.stake_book.items(), key=lambda item: item[1])][0]
+                if device.idx == top_stake_device_idx and device.is_online():
+                    online_validators.append(device)
+            for oppo_validator in online_validators:
+                role_assign_list.remove(oppo_validator)
 
         for device_iter in range(len(role_assign_list)):
             if device_iter < n_workers:
@@ -209,13 +224,13 @@ def main():
             device._validator_txs = []
             device._associated_workers = set()
             device._verified_worker_txs = {}
-            device._neg_voted_txes = {}
+            device._unused_worker_txes = {}
             device._received_validator_txs = {}
             device._verified_validator_txs = set()
             device._final_ticket_model = None
             device.produced_block = None
             #device._final_models_signatures = set()
-            device._dup_pos_voted_txes = {}
+            device._dup_used_worker_txes = {}
             
         ''' device starts Fed-POLL '''
         ### worker starts learning and pruning ###
@@ -233,7 +248,7 @@ def main():
             # associate with validators
             worker.asso_validators(online_validators)
             
-        ### validators validate models and broadcast transations ###
+        ### validators validate models ###
         for validator_iter in range(len(online_validators)):
             validator = online_validators[validator_iter]
             # resync chain
@@ -241,23 +256,21 @@ def main():
                 validator.post_resync()
             # verify tx signature
             validator.receive_and_verify_worker_tx_sig()
-            # validate model accuracy and form voting tx
-            if args.validation_method == 1:
-                validator.validate_models_and_init_validator_tx(idx_to_device)
-            elif args.validation_method == 2:
-                validator.validate_models_attack_level_based(idx_to_device)
-            #validator.validate_models_and_init_validator_tx_VBFL(comm_round, idx_to_device)
+            # validate model accuracy and form validator tx
+            validator.validate_model(idx_to_device)
+            #validator.shapley_value_validation_VBFL(comm_round, idx_to_device)
         
-        ### validators perform FedAvg and produce blocks ###
+        ### validators broadcast(exchange) transations, perform FedAvg and produce blocks ###
         for validator_iter in range(len(online_validators)):
             validator = online_validators[validator_iter]
             # validate exchange tx and validation results
-            validator.exchange_and_verify_validator_tx(online_validators)
+            if args.vote:
+                validator.exchange_and_verify_validator_tx(online_validators)
+            else:
+                # in this mode, validators directly use its received models for FedAvg and produce block
+                validator.validator_no_exchange_tx()
             # validator produces global ticket model
-            if args.validation_method == 1:
-                validator.produce_global_model()
-            elif args.validation_method == 2:
-                validator.produce_global_model_attack_level_based()
+            validator.produce_global_model()
             # validator produce block
             block = validator.produce_block()
             # validator broadcasts block
@@ -271,18 +284,16 @@ def main():
                 # no winning_block found, perform chain_resync next round
                 continue
             # check block
-            # record all winning validators (due to forking, may be more than 1) and assign them as workers the next round
-            idx_to_device[winning_block.produced_by].role = "win_validator"
             if not device.check_block_when_appending(winning_block):
                 # block check failed, perform chain_resync next round
                 continue
             # append and process block
             device.append_and_process_block(winning_block)
             # check performance of the validation mechanism
-            device.check_validation_performance(winning_block, idx_to_device, comm_round)
+            # device.check_validation_performance(winning_block, idx_to_device, comm_round)
         
         ### all devices test latest models ###
-        if comm_round == 1 or comm_round % args.report_model_acc_freq == 0:
+        if comm_round == 1 or comm_round % args.log_model_acc_freq == 0:
             # this process is slow, so added frequency control
             for device in devices_list:
                 device.test_indi_accuracy(comm_round)

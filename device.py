@@ -18,6 +18,8 @@ from util import *
 from util import train as util_train
 from util import test_by_data_set
 
+import pandas as pd
+
 from copy import copy, deepcopy
 from Crypto.PublicKey import RSA
 from hashlib import sha256
@@ -26,6 +28,7 @@ from Blockchain import Blockchain
 import random
 import string
 import collections 
+from statistics import mean
 
 # used for signature embedding
 letters = string.ascii_lowercase
@@ -74,10 +77,9 @@ class Device():
         self._received_validator_txs = {} # worker_id_to_corresponding_validator_txes
         self._verified_validator_txs = set()
         self._final_ticket_model = None
-        self._pos_voted_txes = {} # models used in final ticket model
-        self._participating_validators = set()
-        self._neg_voted_txes = {} # models NOT used in final ticket model
-        self._dup_pos_voted_txes = {}
+        self._used_worker_txes = {} # models used in final ticket model
+        self._unused_worker_txes = {} # models NOT used in final ticket model
+        self._dup_used_worker_txes = {}
         self.produced_block = None
         # init key pair
         self.modulus = None
@@ -376,7 +378,7 @@ class Device():
             else:
                 print(f"Signature of tx from worker {worker['idx']} is invalid.")
 
-    def form_validator_tx(self, worker_idx, model_vote):
+    def form_validator_tx(self, worker_idx, model_vote=0, shapley_diff_rewards=0, indi_acc_rewards=0):
         validator_tx = {
             '1. validator_idx': self.idx,
             '2. worker_idx': worker_idx,
@@ -385,19 +387,22 @@ class Device():
             '5. l_sign(worker_m_sig)': self._verified_worker_txs[worker_idx]['m_sig_sig'], # the worker makes sure that no other validators can temper with worker_m_sig
             '6. worker_rsa': self._verified_worker_txs[worker_idx]['rsa_pub_key'],
             '7. validator_vote': model_vote,
-            '8. v_sign(validator_vote + worker_sign(l_m_sig))': self.sign_msg(model_vote + self._verified_worker_txs[worker_idx]['m_sig_sig']), # the validator makes sure no other validators can temper with vote'
+            '8. shapley_diff_rewards': shapley_diff_rewards,
+            '9. indi_acc_rewards': indi_acc_rewards, # negtive rewards for 8 and 9 do not make sense
+            '10. v_sign(vote_or_rewards + worker_sign(l_m_sig))': self.sign_msg(model_vote + self._verified_worker_txs[worker_idx]['m_sig_sig']), # the validator makes sure no other validators can temper with vote'
             'rsa_pub_key': self.return_rsa_pub_key() 
         } 
         validator_tx['tx_sig'] = self.sign_msg(str(validator_tx)) # will be removed in final block
         return validator_tx
 
-    def validate_models_and_init_validator_tx_VBFL(self, comm_round, idx_to_device):
+    '''
+    def shapley_value_validation_VBFL(self, comm_round, idx_to_device):
 
-        '''
-        1. Validator one-epoch update from the latest global model and get training accuracy
-        2. Test worker's model on its training data
-        3. Compare with threshold
-        '''
+        
+        # 1. Validator one-epoch update from the latest global model and get training accuracy
+        # 2. Test worker's model on its training data
+        # 3. Compare with threshold
+
         # 1. Validator one-epoch update from the latest global model and get training accuracy
         temp_validator_model = deepcopy(self.model)
         # one epoch of training
@@ -428,58 +433,59 @@ class Device():
             identity = "malicious" if idx_to_device[worker_idx]._is_malicious else "legit"
             print("For worker", worker_idx, identity, f"{eval_acc} - {self.validator_local_accuracy} = {eval_acc - self.validator_local_accuracy}")
             wandb.log({"comm_round": comm_round, f"v_{self.idx}_{self._user_labels}_to_w_{worker_idx}_{idx_to_device[worker_idx]._user_labels}_{identity}": eval_acc - self.validator_local_accuracy})
+    '''
 
-    def validate_models_attack_level_based(self, idx_to_device):
-        
-        pos_vote_models_count = round(len(self._verified_worker_txs) * self.args.attack_level)
+    ''' Validation Methods '''
+
+    # helper functions
+    def return_worker_to_acc_top_to_low(self, worker_idx_to_model):
         # Test worker's model on its training data
         worker_idx_to_acc = {}
-        for worker_idx, worker_tx in self._verified_worker_txs.items():
-            worker_model = worker_tx['model']
+        for worker_idx, worker_model in worker_idx_to_model.items():
             worker_idx_to_acc[worker_idx] = test_by_data_set(worker_model,
                 self._train_loader,
                 self.args.dev_device,
                 self.args.test_verbose)['Accuracy'][0]
-        worker_model_acc_top_to_low = [w_idx for w_idx, acc in sorted(worker_idx_to_acc.items(), key=lambda item: item[1], reverse=True)]
+        worker_to_acc_top_to_low = {w_idx: acc for w_idx, acc in sorted(worker_idx_to_acc.items(), key=lambda item: item[1], reverse=True)}
+        return worker_to_acc_top_to_low
 
-        validator_txes = []
-        # positive votes
-        pos_workers = worker_model_acc_top_to_low[:pos_vote_models_count]
-        for pos_worker in pos_workers:
-            if self.args.mal_vs and self._is_malicious:
-                validator_tx = self.form_validator_tx(pos_worker, 0)
-            else:
-                validator_tx = self.form_validator_tx(pos_worker, 1)
-            validator_txes.append(validator_tx)
-        # negative votes
-        for neg_worker in set(worker_model_acc_top_to_low) - set(pos_workers):
-            if self.args.mal_vs and self._is_malicious:
-                validator_tx = self.form_validator_tx(pos_worker, 1)
-            else:
-                validator_tx = self.form_validator_tx(neg_worker, 0)
-            validator_txes.append(validator_tx)
-        self._validator_txs = validator_txes
+    def filter_by_acc_z_score(self, worker_to_acc):
+        df = pd.DataFrame({'worker_idx': worker_to_acc.keys(), 'acc': worker_to_acc.values()})
+        df['zscore'] = (df.acc - df.acc.mean())/df.acc.std()
+        selected_models = df[(df.zscore > -self.args.z_counts) & (df.zscore < self.args.z_counts)]
+        unselected_models = df[~df.apply(tuple,1).isin(selected_models.apply(tuple,1))]
 
-    def validate_models_and_init_validator_tx(self, idx_to_device):
+        return selected_models, unselected_models
 
+    def shapley_value_get_base_acc(self, models):
+        # used in shapley value based validation (validation 1 and 2)
+        base_aggr_model = fedavg(models, self.args.dev_device)
+        base_aggr_model_acc = test_by_data_set(base_aggr_model,
+                               self._train_loader,
+                               self.args.dev_device,
+                               self.args.test_verbose)['Accuracy'][0]
+        return base_aggr_model_acc
+
+    def exclude_one_model_and_fedavg_rest(self, worker_idx_to_model):
+        # used in shapley value based validation (validation 1 and 2)
+        if len(worker_idx_to_model) == 1:
+            sys.exit("This shouldn't happen in exclude_one_model().")
+        excluding_one_models_list = {}
+        for idx, model in worker_idx_to_model.items():
+            tmp_models_list = copy(worker_idx_to_model)
+            del tmp_models_list[idx]
+            excluding_one_models_list[idx] = fedavg(list(tmp_models_list.values()), self.args.dev_device)
+        return excluding_one_models_list
+
+    def validate_model_sig(self):
         # Assume workers are honest in providing their model signatures by summing up rows and columns. This attack is so easy to spot.
-        
-        def exclude_one_model(models_list):
-            if len(models_list) == 1:
-                sys.exit("This shouldn't happen in exclude_one_model().")
-            excluding_one_models_list = {}
-            for idx, model in models_list.items():
-                tmp_models_list = copy(models_list)
-                del tmp_models_list[idx]
-                excluding_one_models_list[idx] = fedavg(list(tmp_models_list.values()), self.args.dev_device)
-            return excluding_one_models_list
-        
-        # validate model sparsity
+        # self.validate_model_sig() worker_model_sig = worker_tx['m_sig'], and check worker_tx['m_m_sig'] by worker's rsa key, easy, skip
+        return True
+
+    def validate_model_sparsity(self):
         worker_idx_to_model = {}
         for worker_idx, worker_tx in self._verified_worker_txs.items():
             worker_model = worker_tx['model']
-            worker_model_sig = worker_tx['m_sig']
-            # TODO - check worker_tx['m_m_sig'] by worker's rsa key, easy, skip
             # validate model spasity
             pruned_amount = round(get_pruned_amount_by_weights(worker_model), 2)
             prune_diff = self.blockchain.get_cur_pruning_diff()
@@ -493,80 +499,102 @@ class Device():
                 # continue
             
             worker_idx_to_model[worker_idx] = worker_model
+        return worker_idx_to_model
+
+    def model_structure_validation(self):
+        # self.validate_model_sig()
+        worker_idx_to_model = self.validate_model_sparsity()
+        return worker_idx_to_model
+
+    # base validatation_method
+    def validate_model(self, idx_to_device):
+
+        # validate model signature and sparsity
+        worker_idx_to_model = self.model_structure_validation()
             
         if not worker_idx_to_model:
             print(f"{self.role} {self.idx} either has not received any worker tx, or did not pass the verification of any worker tx.")
             return
         
-        # validate model accuracy
-        base_aggr_model = fedavg(list(worker_idx_to_model.values()), self.args.dev_device)
-        base_aggr_model_acc = test_by_data_set(base_aggr_model,
-                               self._train_loader,
-                               self.args.dev_device,
-                               self.args.test_verbose)['Accuracy'][0]
-
-        validator_txes = []
-
-        # used for debugging the validation scheme
-        user_labels_counter = []
         if len(worker_idx_to_model) == 1:
             # vote = 0, due to lack comparing models
             worker_idx = list(worker_idx_to_model.keys())[0]
-            model_vote = 0
-            validator_txes.append(self.form_validator_tx(worker_idx, model_vote))
+            self._validator_txs = [self.form_validator_tx(worker_idx)]
+            return
         else:
-            # worker_idx_to_weighted_model = avg_individual_model(worker_idx_to_model, len(worker_idx_to_model) - 1)
+            if self.args.validation_method == 1:
+                self.shapley_value_validation(idx_to_device, worker_idx_to_model)
+            elif self.args.validation_method == 2:
+                self.filter_valuation(worker_idx_to_model)
+            elif self.args.validation_method == 3:
+                self.attack_level_validation(worker_idx_to_model)
+            elif self.args.validation_method == 4:
+                self.greedy_soup_validation(worker_idx_to_model)
+
+
+    # validation_method == 1, malicious validators flip votes (but they probably do not want to do that)
+    def shapley_value_validation(self, idx_to_device, worker_idx_to_model):
+        
+        validator_txes = []
+        
+        # validate model accuracy
+        base_aggr_model_acc = self.shapley_value_get_base_acc(list(worker_idx_to_model.values()))
+
+        user_labels_counter = [] # used for debugging the validation scheme
+
+        # worker_idx_to_weighted_model = avg_individual_model(worker_idx_to_model, len(worker_idx_to_model) - 1)
+        
+        excluding_one_models_list = self.exclude_one_model_and_fedavg_rest(worker_idx_to_model)
+        identity = "malicious" if self._is_malicious else "legit"
+
+        # test each model
+        print(f"\nValidator {self.idx} {identity} with base model acc {round(base_aggr_model_acc, 2)} and labels {self._user_labels} starts validating models.")
+        
+        for worker_idx, model in excluding_one_models_list.items():
+            exclu_aggr_model_acc = test_by_data_set(model,
+                            self._train_loader,
+                            self.args.dev_device,
+                            self.args.test_verbose)['Accuracy'][0]
             
-            excluding_one_models_list = exclude_one_model(worker_idx_to_model)
+            acc_difference = base_aggr_model_acc - exclu_aggr_model_acc
+
+            malicious_worker = idx_to_device[worker_idx]._is_malicious
+            judgement = "right"
+
+            if acc_difference > 0:
+                model_vote = 1
+                inc_or_dec = "decreased"
+                if malicious_worker:
+                    judgement = "WRONG"
+            elif acc_difference == 0:
+                # added =0 because if n_class so small, in first few rounds the diff could = 0, so good or bad is undecided
+                model_vote = 0
+                inc_or_dec = "CAN NOT DECIDE"
+                if malicious_worker:
+                    judgement = "WRONG"
+            else:
+                model_vote = -1
+                inc_or_dec = "increased"
+                if not malicious_worker:
+                    judgement = "WRONG"
+
+            print(f"Excluding worker {worker_idx}'s ({idx_to_device[worker_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote} - Judgement {judgement}.")
+
+            # turn off validation, pass all models, and mal_vs will be turned off
+            if self.args.pass_all_models:
+                self.args.mal_vs = 0
+                model_vote = 1
+
+            # if malicious validator, disturb vote
+            if self.args.mal_vs and self._is_malicious:
+                model_vote = 1 if model_vote == 0 else model_vote * -1
+                # acc_difference = acc_difference * -1 # negative rewards do not make sense
+
+            user_labels_counter.extend(list(idx_to_device[worker_idx]._user_labels))
             
-            identity = "malicious" if self._is_malicious else "legit"
-
-            # test each model
-            print(f"\nValidator {self.idx} {identity} with base model acc {round(base_aggr_model_acc, 2)} and labels {self._user_labels} starts validating models.")
-            
-            for worker_idx, model in excluding_one_models_list.items():
-                this_model_acc = test_by_data_set(model,
-                                self._train_loader,
-                                self.args.dev_device,
-                                self.args.test_verbose)['Accuracy'][0]
-                
-                acc_difference = base_aggr_model_acc - this_model_acc
-
-                malicious_worker = idx_to_device[worker_idx]._is_malicious
-                judgement = "right"
-
-                if acc_difference > 0:
-                    model_vote = 1
-                    inc_or_dec = "decreased"
-                    if malicious_worker:
-                        judgement = "WRONG"
-                elif acc_difference == 0:
-                    # added =0 because if n_class so small, in first few rounds the diff could = 0, so good or bad is undecided
-                    model_vote = 0
-                    inc_or_dec = "CAN NOT DECIDE"
-                    if malicious_worker:
-                        judgement = "WRONG"
-                else:
-                    model_vote = -1
-                    inc_or_dec = "increased"
-                    if not malicious_worker:
-                        judgement = "WRONG"
-            
-                # disturb vote
-                if self.args.mal_vs and self._is_malicious:
-                    model_vote = model_vote * -1
-                
-                # turn off validation, pass all models
-                if self.args.pass_all_models:
-                    model_vote = 1
-
-                print(f"Excluding worker {worker_idx}'s ({idx_to_device[worker_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote} - Judgement {judgement}.")
-
-                user_labels_counter.extend(list(idx_to_device[worker_idx]._user_labels))
-                
-                # form validator tx for this worker tx (and model)
-                validator_tx = self.form_validator_tx(worker_idx, model_vote)
-                validator_txes.append(validator_tx)
+            # form validator tx for this worker tx (and model)
+            validator_tx = self.form_validator_tx(worker_idx, model_vote=model_vote, shapley_diff_rewards=acc_difference)
+            validator_txes.append(validator_tx)
 
         # debug the validation mechanism
         if self.args.debug_validation:
@@ -575,7 +603,151 @@ class Device():
             print("Unique labels", len(user_labels_counter_dict))
         
         self._validator_txs = validator_txes
+
+    # validation_method == 2, malicious validators flip votes (but they probably do not want to do that)
+    def filter_valuation(self, worker_idx_to_model):
+
+        top_models_count = round(len(worker_idx_to_model) * self.args.attack_level)
+
+        def prepare_vote_1_models(model_df):
+            # return the models to be used mapped to its accuracy
+            model_to_indi_acc = {}
+            selected_worker_idx_to_model = {}
+            for iter in range(min(top_models_count, len(model_df))):
+                worker_idx = int(model_df[iter:iter+1].iloc[0]['worker_idx'])
+                acc = model_df[iter:iter+1].iloc[0]['acc']
+                model_to_indi_acc[worker_idx_to_model[worker_idx]] = acc
+                selected_worker_idx_to_model[worker_idx] = worker_idx_to_model[worker_idx]
+            return model_to_indi_acc, selected_worker_idx_to_model
         
+        def prepare_vote_0_models(model_df):
+            worker_to_indi_acc = {}
+            for iter in range(min(top_models_count, len(model_df))):
+                worker_idx = int(model_df[iter:iter+1].iloc[0]['worker_idx'])
+                acc = model_df[iter:iter+1].iloc[0]['acc']
+                worker_to_indi_acc[worker_idx] = acc
+            return worker_to_indi_acc
+
+             
+        validator_txes = []
+
+        worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
+
+        df_selected_models, df_unselected_models = self.filter_by_acc_z_score(worker_to_acc_top_to_low)
+
+        
+        if self.args.mal_vs and self._is_malicious:
+            # use the unselected_models
+            v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_vote_1_models(df_unselected_models)
+            v0_worker_to_indi_acc = prepare_vote_0_models(df_selected_models)
+        else:
+            v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_vote_1_models(df_selected_models)
+            v0_worker_to_indi_acc = prepare_vote_0_models(df_unselected_models)
+
+        # for vote=1 models, calcuate shaply value accuracy difference for rewards_method_1
+        base_aggr_model_acc = self.shapley_value_get_base_acc(list(v1_model_to_indi_acc.keys()))
+        excluding_one_models_list = self.exclude_one_model_and_fedavg_rest(v1_selected_worker_idx_to_model)
+        
+        for worker_idx, model in excluding_one_models_list.items():
+            exclu_aggr_model_acc = test_by_data_set(model,
+                            self._train_loader,
+                            self.args.dev_device,
+                            self.args.test_verbose)['Accuracy'][0]
+            
+            acc_difference = base_aggr_model_acc - exclu_aggr_model_acc
+            validator_tx = self.form_validator_tx(worker_idx, model_vote=1, shapley_diff_rewards=acc_difference, indi_acc_rewards=v1_model_to_indi_acc[worker_idx_to_model[worker_idx]])
+            validator_txes.append(validator_tx)
+
+        # for vote=0 models, shapley_diff_rewards=0
+        for worker_idx, acc in v0_worker_to_indi_acc.items():
+            validator_tx = self.form_validator_tx(worker_idx, model_vote=0, indi_acc_rewards=acc)
+
+        self._validator_txs = validator_txes
+            
+
+    # validation_method == 3, malicious validators flip votes and reverse rewards (but they probably do not want to do that)
+    def attack_level_validation(self, worker_idx_to_model):
+
+        pos_vote_models_count = round(len(worker_idx_to_model) * self.args.attack_level)
+        
+        worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
+        worker_ranked_acc_top_to_low = list(worker_to_acc_top_to_low.keys())
+        worker_ranked_acc_low_to_top = worker_ranked_acc_top_to_low[::-1]
+
+        validator_txes = []
+
+        for worker_iter in range(len(worker_ranked_acc_top_to_low)):
+            worker_idx = worker_ranked_acc_top_to_low[worker_iter]
+            reversed_worker_idx = worker_ranked_acc_low_to_top[worker_iter]
+            if worker_iter < pos_vote_models_count:
+                # positive vote
+                if self.args.mal_vs and self._is_malicious:
+                    vote = 0
+                    indi_acc_rewards=worker_to_acc_top_to_low[reversed_worker_idx]
+                else:
+                    vote = 1
+                    indi_acc_rewards=worker_to_acc_top_to_low[worker_idx]
+            else:
+                # negative vote
+                if self.args.mal_vs and self._is_malicious:
+                    vote = 1
+                    indi_acc_rewards=worker_to_acc_top_to_low[reversed_worker_idx]
+                else:
+                    vote = 0
+                    indi_acc_rewards=worker_to_acc_top_to_low[worker_idx]
+            validator_tx = self.form_validator_tx(worker_idx, model_vote = vote, indi_acc_rewards=indi_acc_rewards)
+            validator_txes.append(validator_tx)
+        self._validator_txs = validator_txes
+
+    # validation_method == 4, malicious validators flip votes and assign bad models top rewards (but they probably do not want to do that)
+    def greedy_soup_validation(self, worker_idx_to_model):
+
+        worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
+
+        validator_txes = []
+        worker_idx_to_vote = {}
+        worker_idx_to_diff_acc = {}
+
+        ingredients = []
+        last_acc = 0
+
+        for worker_idx in worker_to_acc_top_to_low.keys():
+            model = worker_idx_to_model[worker_idx]
+            new_aggr_models = copy(ingredients)
+            new_aggr_models.append(model)
+            
+            new_aggr_model = fedavg(new_aggr_models, self.args.dev_device)
+            to_compare_acc = test_by_data_set(new_aggr_model,
+                                self._train_loader,
+                                self.args.dev_device,
+                                self.args.test_verbose)['Accuracy'][0]
+            
+            if to_compare_acc >= last_acc:
+                ingredients.append(model)
+                worker_idx_to_diff_acc[worker_idx] = to_compare_acc - last_acc
+                last_acc = to_compare_acc
+                worker_idx_to_vote[worker_idx] = 1
+            else:
+                worker_idx_to_vote[worker_idx] = 0
+                worker_idx_to_diff_acc[worker_idx] = to_compare_acc - last_acc
+
+        if self.args.mal_vs and self._is_malicious:
+            votes_from_0_to_1 = {w: v for w, v in sorted(worker_idx_to_vote.items(), key=lambda item: item[1])}
+            worker_iter = 0
+            for worker_idx, vote in votes_from_0_to_1.items():
+                vote = 1 if vote == 0 else 0
+                worker_idx_to_diff_acc[worker_idx] *= -1
+                validator_tx = self.form_validator_tx(worker_idx, model_vote = vote, shapley_diff_rewards= worker_idx_to_diff_acc[worker_idx],indi_acc_rewards=worker_to_acc_top_to_low.values()[worker_iter])
+                validator_txes.append(validator_tx)
+                worker_iter += 1
+        else:
+            for worker_idx, vote in worker_idx_to_vote.items():
+                validator_tx = self.form_validator_tx(worker_idx, model_vote = vote, shapley_diff_rewards= worker_idx_to_diff_acc[worker_idx],indi_acc_rewards=worker_to_acc_top_to_low[worker_idx])
+                validator_txes.append(validator_tx)
+        self._validator_txs = validator_txes
+    
+    ''' Validation Methods '''
+
     def exchange_and_verify_validator_tx(self, validators):
         # key: worker_idx, value: transactions from its associated validators
         self._received_validator_txs = {}
@@ -596,78 +768,62 @@ class Device():
                     self._received_validator_txs[tx['2. worker_idx']].append(tx)
                 else:
                     self._received_validator_txs[tx['2. worker_idx']] = [tx]
-                    
-    
+
+    def validator_no_exchange_tx(self):
+        self._received_validator_txs = {}
+        for tx in self._validator_txs:
+            self._received_validator_txs[tx['2. worker_idx']] = [tx]
+
     def produce_global_model(self):
-        # TODO - check again model sparsity from other validators' transactions
+        # TODO - cross check model sparsity from other validators' transactions	
         # TODO - change _received_validator_txs to _verified_validator_txs
         final_models_to_fedavg = []
-        pos_voted_txes = {} # worker_idx to its validator tx, used txes in block, verify participating validators and model_sig
-        duplicated_pos_voted_txes = {} # verify participating validators
-        neg_voted_txes = {} # unused txes in block, verify participating validators and model_sig
-        participating_validators = set()
-        for worker_idx, corresponding_validators_txes in self._received_validator_txs.items():
-            neg_voted_txes[worker_idx] = []
-            # validators do not check if workers send different txes
-            duplicated_pos_voted_txes[worker_idx] = []
-            # if worker_idx in self._black_list: # gave up blacklist
-            #     if self._black_list[worker_idx] >= self.args.kick_out_rounds:
-            #         continue
-            model_votes = sum([validator_tx['7. validator_vote'] for validator_tx in corresponding_validators_txes])
-            participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes]))
-            if model_votes >= 0:
-                # random.choice is necessary because in this design one worker can send different txs to different validators. can change to use stake_book to determine which validator's tx to pick
-                chosen_tx = random.choice(corresponding_validators_txes)
-                corresponding_validators_txes.remove(chosen_tx)
-                duplicated_pos_voted_txes[worker_idx].extend(corresponding_validators_txes)
-                final_models_to_fedavg.append(chosen_tx['3. worker_model'])
-                pos_voted_txes[worker_idx] = chosen_tx
-                del neg_voted_txes[worker_idx]
-            else:
-                neg_voted_txes[worker_idx].extend(corresponding_validators_txes)
-                del duplicated_pos_voted_txes[worker_idx]
-        # self._final_ticket_model = fedavg_workeryfl(final_models_to_fedavg, self.args.dev_device)
-        if final_models_to_fedavg:
-            self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
-        else:
-            # no local models have passed the validation, use the latest global model
-            # take caution of shallow copy
-            self._final_ticket_model = self.model
-        # print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
-        # print()
-        self._pos_voted_txes = pos_voted_txes
-        self._dup_pos_voted_txes = duplicated_pos_voted_txes
-        self._neg_voted_txes = neg_voted_txes
-        # no way to ensure that the validator chooses the model and model_sig within the same tx, but if a worker doesn't send different models, there would be no issue. Validator also is responsible to check for the model_sig. If invalid, should drop before the block. Once model_sig found invalid in the block, the whole block becomes invalid and no one will be rewarded, so validators are not incentived to select a model_sig from a different validator_tx that has the same model 
-        self._participating_validators = participating_validators
+        used_worker_txes = {} # worker_idx to its validator tx, used txes in block, verify participating validators and worker's model_sig
+        dup_used_worker_txes = {} # identify participating validators and reward info, only verify participating validators
+        unused_worker_txes = {} # unused txes in block, verify participating validators and model_sig
 
-    def produce_global_model_attack_level_based(self):
-        final_models_to_fedavg = []
-        pos_voted_txes = {} # worker_idx to its validator tx, used txes in block, verify participating validators and model_sig
-        duplicated_pos_voted_txes = {} # verify participating validators
-        neg_voted_txes = {} # unused txes in block, verify participating validators and model_sig
-        participating_validators = set()
+        # sum up model votes
+        worker_to_votes = {}
         for worker_idx, corresponding_validators_txes in self._received_validator_txs.items():
-            neg_voted_txes[worker_idx] = []
-            # validators do not check if workers send different txes
-            duplicated_pos_voted_txes[worker_idx] = []
-            # if worker_idx in self._black_list: # gave up blacklist
-            #     if self._black_list[worker_idx] >= self.args.kick_out_rounds:
-            #         continue
             model_votes = sum([validator_tx['7. validator_vote'] for validator_tx in corresponding_validators_txes])
-            participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes]))
-            if model_votes >= int(len(corresponding_validators_txes) * self.args.attack_level):
-                # random.choice is necessary because in this design one worker can send different txs to different validators. can change to use stake_book to determine which validator's tx to pick
-                chosen_tx = random.choice(corresponding_validators_txes)
-                corresponding_validators_txes.remove(chosen_tx)
-                duplicated_pos_voted_txes[worker_idx].extend(corresponding_validators_txes)
-                final_models_to_fedavg.append(chosen_tx['3. worker_model'])
-                pos_voted_txes[worker_idx] = chosen_tx
-                del neg_voted_txes[worker_idx]
+            worker_to_votes[worker_idx] = model_votes
+            # participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes])) - do in block process
+        
+        # calculate how many models to choose by # of unique workers times the attack_level
+        top_models_count = round(len(self._received_validator_txs) * self.args.attack_level)
+        
+        # sort votes by decreasing order, and determine top voted models
+        workers_votes_high_to_low = [w_idx for w_idx, votes in sorted(worker_to_votes.items(), key=lambda item: item[1], reverse=True)]
+        chosen_workers = workers_votes_high_to_low[:top_models_count]
+
+        # choose models for final aggregation
+        for worker_idx in chosen_workers:
+            corresponding_validators_txes = self._received_validator_txs[worker_idx]
+            # worker_shap_diff_rewards = sum([validator_tx['8. shapley_diff_rewards'] for validator_tx in corresponding_validators_txes])
+            # worker_indi_acc_rewards = sum([validator_tx['9. indi_acc_rewards'] for validator_tx in corresponding_validators_txes]) - do those in block processing
+            if self.idx in set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes]):
+                for validator_tx in corresponding_validators_txes:
+                    if self.idx == validator_tx['1. validator_idx']:
+                        # if this validator has this worker's transaction, it prefers its own transaction
+                        chosen_tx = validator_tx
+                        break
             else:
-                neg_voted_txes[worker_idx].extend(corresponding_validators_txes)
-                del duplicated_pos_voted_txes[worker_idx]
-        # self._final_ticket_model = fedavg_workeryfl(final_models_to_fedavg, self.args.dev_device)
+                # random.choice is necessary because in this design one worker can send different txs to different validators. may change to use stake_book to determine which validator's tx to pick
+                chosen_tx = random.choice(corresponding_validators_txes)
+            final_models_to_fedavg.append(chosen_tx['3. worker_model'])
+            used_worker_txes[worker_idx] = chosen_tx
+            # record other unused transactions to reward other participating validators
+            # validators do not check if workers send different txes
+            corresponding_validators_txes.remove(chosen_tx)
+            dup_used_worker_txes[worker_idx] = corresponding_validators_txes
+
+        # for unused transactions, also record them to identify global participating validators
+        unchosen_workers = workers_votes_high_to_low[-(len(self._received_validator_txs) - top_models_count):]
+
+        for worker_idx in unchosen_workers:
+            unused_worker_txes[worker_idx] = self._received_validator_txs[worker_idx]
+
+
         if final_models_to_fedavg:
             self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
         else:
@@ -676,11 +832,10 @@ class Device():
             self._final_ticket_model = self.model
         # print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
         # print()
-        self._pos_voted_txes = pos_voted_txes
-        self._dup_pos_voted_txes = duplicated_pos_voted_txes
-        self._neg_voted_txes = neg_voted_txes
+        self._used_worker_txes = used_worker_txes
+        self._dup_used_worker_txes = dup_used_worker_txes
+        self._unused_worker_txes = unused_worker_txes
         # no way to ensure that the validator chooses the model and model_sig within the same tx, but if a worker doesn't send different models, there would be no issue. Validator also is responsible to check for the model_sig. If invalid, should drop before the block. Once model_sig found invalid in the block, the whole block becomes invalid and no one will be rewarded, so validators are not incentived to select a model_sig from a different validator_tx that has the same model 
-        self._participating_validators = participating_validators
 
 
     def remove_model_and_vtx_sig(self):
@@ -689,31 +844,31 @@ class Device():
             del v_tx['3. worker_model']
             del v_tx['tx_sig']
         
-        for validator_tx in self._pos_voted_txes.values():
+        for validator_tx in self._used_worker_txes.values():
             remove_from_single_tx(validator_tx)
 
-        for validator_txs in self._dup_pos_voted_txes.values():
+        for validator_txs in self._dup_used_worker_txes.values():
             for validator_tx in validator_txs:
                 remove_from_single_tx(validator_tx)
 
-        for validator_txs in self._neg_voted_txes.values():
+        for validator_txs in self._unused_worker_txes.values():
             for validator_tx in validator_txs:
                 remove_from_single_tx(validator_tx)
 
     def check_validation_performance(self, block, idx_to_device, comm_round):
         incorrect_pos = 0
         incorrect_neg = 0
-        for pos_voted_worker_idx in list(block.pos_voted_txes.keys()):
+        for pos_voted_worker_idx in list(block.used_worker_txes.keys()):
             if idx_to_device[pos_voted_worker_idx]._is_malicious:
                 incorrect_pos += 1
-        for neg_voted_worker_idx in list(block.neg_voted_txes.keys()):
+        for neg_voted_worker_idx in list(block.unused_worker_txes.keys()):
             if not idx_to_device[neg_voted_worker_idx]._is_malicious:
                 incorrect_neg += 1
-        print(f"{incorrect_pos} / {len(block.pos_voted_txes)} are malicious but used.")
-        print(f"{incorrect_neg} / {len(block.neg_voted_txes)} are legit but not used.")
-        incorrect_rate = (incorrect_pos + incorrect_neg)/(len(block.pos_voted_txes) + len(block.neg_voted_txes))
+        print(f"{incorrect_pos} / {len(block.used_worker_txes)} are malicious but used.")
+        print(f"{incorrect_neg} / {len(block.unused_worker_txes)} are legit but not used.")
+        incorrect_rate = (incorrect_pos + incorrect_neg)/(len(block.used_worker_txes) + len(block.unused_worker_txes))
         try:
-            false_positive_rate = incorrect_pos/len(block.pos_voted_txes)
+            false_positive_rate = incorrect_pos/len(block.used_worker_txes)
         except ZeroDivisionError:
             # no models were voted positively
             false_positive_rate = -0.1
@@ -734,7 +889,7 @@ class Device():
         # remove model and validator signature from validator txs
         self.remove_model_and_vtx_sig()
 
-        block = Block(last_block_hash, self._final_ticket_model, self._pos_voted_txes, self._dup_pos_voted_txes, self._neg_voted_txes, self._participating_validators, self.idx, self.return_rsa_pub_key())
+        block = Block(last_block_hash, self._final_ticket_model, self._used_worker_txes, self._dup_used_worker_txes, self._unused_worker_txes, self.idx, self.return_rsa_pub_key())
         sign_block(block)
 
         self.produced_block = block
@@ -862,24 +1017,52 @@ class Device():
         self.blockchain.chain.append(copy(winning_block))
         
         block = self.blockchain.get_last_block()
-        to_reward_workers = list(block.pos_voted_txes.keys())
+        to_reward_workers = list(block.used_worker_txes.keys())
         
-        # for unused (duplicated) positive transactions - votes >= 0, reverify participating validators
+        # for unused (duplicated) transactions, reverify participating validators
         pass
         
-        # get participating validators - TODO finish the code in POLL(), iterate over all used and unused validator idxes
-        # temporarily use block.participating_validators
+        # get participating validators
                 
         # update stake info
+        # workers
+        if self.args.reward_method == 1:
+            reward_type = '8. shapley_diff_rewards' 
+        elif self.args.reward_method == 2:
+            reward_type = '9. indi_acc_rewards'
+        this_round_worker_rewards = []
         for to_reward_worker in to_reward_workers:
-            self.stake_book[to_reward_worker] += self.args.w_reward
+            reward = block.used_worker_txes[to_reward_worker][reward_type]    
+            reward += sum([validator_tx[reward_type] for validator_tx in block.dup_used_worker_txes[to_reward_worker]])
+            this_round_worker_rewards.append(reward)
         
+        # validator
         winning_validator = block.produced_by
-        for validator in block.participating_validators:
+        participating_validators = set([validator_tx['1. validator_idx'] for validator_tx in list(block.used_worker_txes.values())])
+        for worker_idx, corresponding_txes in list(block.dup_used_worker_txes.items()) + list(block.unused_worker_txes.items()):
+            participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_txes]))
+        
+        this_round_worker_rewards.sort(reverse=True)
+        if len(this_round_worker_rewards) == 0:
+            winning_rewards = 0
+            participating_rewards = 0
+        elif len(this_round_worker_rewards) == 1:
+            winning_rewards = this_round_worker_rewards[0]
+            participating_rewards = this_round_worker_rewards[0]
+        elif len(this_round_worker_rewards) == 2:
+            winning_rewards = this_round_worker_rewards[1]
+            participating_rewards = this_round_worker_rewards[1]
+        else:
+            winning_rewards = this_round_worker_rewards[1]
+            this_round_worker_rewards.remove(winning_rewards)
+            this_round_worker_rewards.pop(0)
+            participating_rewards = mean(this_round_worker_rewards)
+
+        for validator in participating_validators:
             if validator == winning_validator:
-                self.stake_book[validator] += self.args.win_v_reward
+                self.stake_book[validator] += winning_rewards
             else:
-                self.stake_book[validator] += self.args.v_reward
+                self.stake_book[validator] += participating_rewards
         
         # used to record if a block is produced by a malicious device
         self.has_appended_block = True
