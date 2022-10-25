@@ -98,7 +98,10 @@ def produce_mask_from_model(model):
     for layer, module in model.named_children():
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
-                layer_to_masked_positions[layer] = list(zip(*np.where(weight_params == 0)))
+                if weight_params.is_cuda:
+                    layer_to_masked_positions[layer] = list(zip(*np.where(weight_params.cpu() == 0)))
+                else:
+                    layer_to_masked_positions[layer] = list(zip(*np.where(weight_params == 0)))
         
     for layer, module in model.named_children():
         for name, mask in module.named_buffers():
@@ -291,8 +294,12 @@ def get_pruned_amount_by_weights(model):
     for layer, module in model.named_children():
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
-                total_0_count += len(list(zip(*np.where(weight_params == 0))))
-                total_nan_count += len(torch.nonzero(torch.isnan(weight_params.view(-1))))
+                if weight_params.is_cuda:
+                    total_0_count += len(list(zip(*np.where(weight_params.cpu() == 0))))
+                    total_nan_count += len(torch.nonzero(torch.isnan(weight_params.cpu().view(-1))))
+                else:
+                    total_0_count += len(list(zip(*np.where(weight_params == 0))))
+                    total_nan_count += len(torch.nonzero(torch.isnan(weight_params.view(-1))))
     if total_nan_count > 0:
         sys.exit("nan bug")
     return total_0_count / total_params_count
@@ -303,7 +310,10 @@ def get_pruned_amount_by_mask(model):
     for layer, module in model.named_children():
         for name, mask in module.named_buffers():
             if 'mask' in name:
-                total_0_count += len(list(zip(*np.where(mask == 0))))
+                if mask.is_cuda:
+                    total_0_count += len(list(zip(*np.where(mask.cpu() == 0))))
+                else:
+                    total_0_count += len(list(zip(*np.where(mask == 0))))
     return total_0_count / total_params_count
 
     
@@ -320,7 +330,10 @@ def get_model_sig_sparsity(model, model_sig):
     total_num_model_params = get_num_total_model_params(model)
     total_num_sig_non_0_params = 0
     for layer, layer_sig in model_sig.items():
-        total_num_sig_non_0_params += len(list(zip(*np.where(layer_sig!=0))))
+        if layer_sig.is_cuda:
+            total_num_sig_non_0_params += len(list(zip(*np.where(layer_sig.cpu()!=0))))
+        else:
+            total_num_sig_non_0_params += len(list(zip(*np.where(layer_sig!=0))))
     return total_num_sig_non_0_params / total_num_model_params
 
 def generate_mask_from_0_weights(model):
