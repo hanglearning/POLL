@@ -138,6 +138,7 @@ def main():
     seed_everything(seed=args.seed, workers=True)
     
     args.dev_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    print(f"Using device {args.device}")
     
     ######## setup wandb ########
     wandb.login()
