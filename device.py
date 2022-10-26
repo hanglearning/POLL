@@ -736,7 +736,8 @@ class Device():
                 last_acc = to_compare_acc
                 worker_idx_to_vote[worker_idx] = 1
             else:
-                worker_idx_to_vote[worker_idx] = 0
+                # worker_idx_to_vote[worker_idx] = 0
+                worker_idx_to_vote[worker_idx] = -1
                 worker_idx_to_diff_acc[worker_idx] = to_compare_acc - last_acc
 
         if self.args.mal_vs and self._is_malicious:
@@ -792,19 +793,25 @@ class Device():
 
         # sum up model votes
         worker_to_votes = {}
+        pos_model_votes = 0 # for validation_method == 4
         for worker_idx, corresponding_validators_txes in self._received_validator_txs.items():
             model_votes = sum([validator_tx['7. validator_vote'] for validator_tx in corresponding_validators_txes])
+            pos_model_votes += 1 if model_votes >= 0 else 0
             worker_to_votes[worker_idx] = model_votes
             # participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes])) - do in block process
         
-        # calculate how many models to choose by # of unique workers times the assumed_attack_level
-        top_models_count = round(len(self._received_validator_txs) * self.args.agg_models_portion)
-        
-        # sort votes by decreasing order, and determine top voted models
+        # sort votes by decreasing order, and 
         workers_votes_high_to_low = [w_idx for w_idx, votes in sorted(worker_to_votes.items(), key=lambda item: item[1], reverse=True)]
-        chosen_workers = workers_votes_high_to_low[:top_models_count]
+
+        if self.args.validation_method == 4:
+            top_models_count = pos_model_votes
+        else:
+            # calculate how many models to choose by # of unique workers times the assumed_attack_level
+            top_models_count = round(len(self._received_validator_txs) * self.args.agg_models_portion)
+            #determine top voted models
 
         # choose models for final aggregation
+        chosen_workers = workers_votes_high_to_low[:top_models_count]
         for worker_idx in chosen_workers:
             corresponding_validators_txes = self._received_validator_txs[worker_idx]
             # worker_shap_diff_rewards = sum([validator_tx['8. shapley_diff_rewards'] for validator_tx in corresponding_validators_txes])
