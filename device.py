@@ -527,7 +527,7 @@ class Device():
             elif self.args.validation_method == 2:
                 self.filter_valuation(worker_idx_to_model)
             elif self.args.validation_method == 3:
-                self.attack_level_validation(worker_idx_to_model)
+                self.assumed_attack_level_validation(worker_idx_to_model)
             elif self.args.validation_method == 4:
                 self.greedy_soup_validation(worker_idx_to_model)
 
@@ -607,7 +607,7 @@ class Device():
     # validation_method == 2, malicious validators flip votes (but they probably do not want to do that)
     def filter_valuation(self, worker_idx_to_model):
 
-        top_models_count = round(len(worker_idx_to_model) * self.args.attack_level)
+        top_models_count = round(len(worker_idx_to_model) * (1 - self.args.assumed_attack_level))
 
         def prepare_vote_1_models(model_df):
             # return the models to be used mapped to its accuracy
@@ -666,9 +666,9 @@ class Device():
             
 
     # validation_method == 3, malicious validators flip votes and reverse rewards (but they probably do not want to do that)
-    def attack_level_validation(self, worker_idx_to_model):
+    def assumed_attack_level_validation(self, worker_idx_to_model):
 
-        pos_vote_models_count = round(len(worker_idx_to_model) * self.args.attack_level)
+        pos_vote_models_count = round(len(worker_idx_to_model) * (1 - self.args.assumed_attack_level))
         
         worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
         worker_ranked_acc_top_to_low = list(worker_to_acc_top_to_low.keys())
@@ -789,8 +789,8 @@ class Device():
             worker_to_votes[worker_idx] = model_votes
             # participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes])) - do in block process
         
-        # calculate how many models to choose by # of unique workers times the attack_level
-        top_models_count = round(len(self._received_validator_txs) * self.args.attack_level)
+        # calculate how many models to choose by # of unique workers times the assumed_attack_level
+        top_models_count = round(len(self._received_validator_txs) * self.args.agg_models_portion)
         
         # sort votes by decreasing order, and determine top voted models
         workers_votes_high_to_low = [w_idx for w_idx, votes in sorted(worker_to_votes.items(), key=lambda item: item[1], reverse=True)]
@@ -818,7 +818,7 @@ class Device():
             dup_used_worker_txes[worker_idx] = corresponding_validators_txes
 
         # for unused transactions, also record them to identify global participating validators
-        unchosen_workers = workers_votes_high_to_low[-(len(self._received_validator_txs) - top_models_count):]
+        unchosen_workers = workers_votes_high_to_low[top_models_count:]
 
         for worker_idx in unchosen_workers:
             unused_worker_txes[worker_idx] = self._received_validator_txs[worker_idx]

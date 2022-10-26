@@ -89,7 +89,8 @@ parser.add_argument('--num_workers', type=int, default=0)
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
 
 parser.add_argument('--validation_method', type=int, default=2, help='1 - pure shapley value based, 2 - filter valuation, 3 - attack level based, 4 - greedy soup inspired')
-parser.add_argument('--attack_level', type=float, default=0.5, help='Used in validation method 1~3 to determine how many models to use for aggregation (if not vote) or vote 1 (if vote)')
+parser.add_argument('--assumed_attack_level', type=float, default=0.5, help='Used in validation method 1~3 to determine how many models to use for aggregation (if not vote) or vote 1 (if vote)')
+parser.add_argument('--agg_models_portion', type=float, default=1.0, help='Determine how many models to use for final aggregation based on votes, usually the same as assumed_attack_level')
 parser.add_argument('--z_counts', type=int, default=3, help='Counts of zscores, used in standard deviation based validation (method 2)')
 parser.add_argument('--vote', type=int, default=1, help='If set to 1, validators will exchange and aggregate voting methods. If not, validator will just choose its filtered out models for aggregation and broadcast a block - the block_fork method')
 
