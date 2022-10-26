@@ -19,6 +19,7 @@ from util import train as util_train
 from util import test_by_data_set
 
 import pandas as pd
+pd.set_option('display.max_columns', None)
 
 from copy import copy, deepcopy
 from Crypto.PublicKey import RSA
