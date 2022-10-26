@@ -449,9 +449,16 @@ class Device():
         worker_to_acc_top_to_low = {w_idx: acc for w_idx, acc in sorted(worker_idx_to_acc.items(), key=lambda item: item[1], reverse=True)}
         return worker_to_acc_top_to_low
 
-    def filter_by_acc_z_score(self, worker_to_acc):
+    def filter_by_acc_z_score(self, worker_to_acc, idx_to_device):
         df = pd.DataFrame({'worker_idx': worker_to_acc.keys(), 'acc': worker_to_acc.values()})
+        # is_legit_list used to debug and choose the best z_counts
         df['zscore'] = (df.acc - df.acc.mean())/df.acc.std()
+        is_legit_list = []
+        for iter in range(len(df)):
+            worker_idx = int(df[iter:iter+1].iloc[0]['worker_idx'])
+            is_legit_list.append(not idx_to_device[worker_idx]._is_malicious)
+        df.insert(df.shape[1], "is_legit", is_legit_list)
+        print(df) # debug
         selected_models = df[(df.zscore > -self.args.z_counts) & (df.zscore < self.args.z_counts)]
         unselected_models = df[~df.apply(tuple,1).isin(selected_models.apply(tuple,1))]
 
@@ -525,7 +532,7 @@ class Device():
             if self.args.validation_method == 1:
                 self.shapley_value_validation(idx_to_device, worker_idx_to_model)
             elif self.args.validation_method == 2:
-                self.filter_valuation(worker_idx_to_model)
+                self.filter_valuation(idx_to_device, worker_idx_to_model)
             elif self.args.validation_method == 3:
                 self.assumed_attack_level_validation(worker_idx_to_model)
             elif self.args.validation_method == 4:
@@ -605,7 +612,7 @@ class Device():
         self._validator_txs = validator_txes
 
     # validation_method == 2, malicious validators flip votes (but they probably do not want to do that)
-    def filter_valuation(self, worker_idx_to_model):
+    def filter_valuation(self, idx_to_device, worker_idx_to_model):
 
         top_models_count = round(len(worker_idx_to_model) * (1 - self.args.assumed_attack_level))
 
@@ -633,7 +640,7 @@ class Device():
 
         worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
 
-        df_selected_models, df_unselected_models = self.filter_by_acc_z_score(worker_to_acc_top_to_low)
+        df_selected_models, df_unselected_models = self.filter_by_acc_z_score(worker_to_acc_top_to_low, idx_to_device)
 
         
         if self.args.mal_vs and self._is_malicious:
