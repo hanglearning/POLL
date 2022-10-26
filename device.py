@@ -459,7 +459,7 @@ class Device():
             worker_idx = int(df[iter:iter+1].iloc[0]['worker_idx'])
             is_legit_list.append(not idx_to_device[worker_idx]._is_malicious)
         df.insert(df.shape[1], "is_legit", is_legit_list)
-        df.sort_values('worker_accidx')
+        df.sort_values('worker_idx')
         print(df) # debug
         selected_models = df[(df.zscore > -self.args.z_counts) & (df.zscore < self.args.z_counts)]
         unselected_models = df[~df.apply(tuple,1).isin(selected_models.apply(tuple,1))]
