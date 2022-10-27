@@ -47,7 +47,7 @@ models = {
     }
 }
 
-parser = argparse.ArgumentParser(description='POLL - Proof Of workery Learning')
+parser = argparse.ArgumentParser(description='POLL - Proof Of Lottery Learning')
 
 ####################### system setting #######################
 parser.add_argument('--save_freq', type=int, default=10)
@@ -93,7 +93,7 @@ parser.add_argument('--reward_method', type=int, default='2', help='1 - reward b
 parser.add_argument('--voting_style', type=int, default='1', help='1 - vote by 1 and 0, select top n determined by assumed_attack_level and agg_models_portion, 2 - vote by 1 and -1, select only positive votes')
 
 parser.add_argument('--assumed_attack_level', type=float, default=0.5, help='Used in validation method 2 and 3, to determine how many models to vote 1')
-parser.add_argument('--agg_models_portion', type=float, default=1.0, help='Determine how many models to use for final aggregation based on votes, usually the same as assumed_attack_level. Used in voting_style==1')
+parser.add_argument('--agg_models_portion', type=float, default=1.0, help='Determine how many models to use for final aggregation based on votes, usually (1 - assumed_attack_level). Used in voting_style==1')
 parser.add_argument('--z_counts', type=int, default=1, help='Counts of zscores, used in standard deviation based validation (method 2)')
 parser.add_argument('--vote_than_fork', type=int, default=1, help='If set to 1, validators will exchange and aggregate voting methods. If not, validator will just choose its filtered out models for aggregation and broadcast a block - the block_fork method')
 
