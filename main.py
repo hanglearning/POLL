@@ -75,7 +75,7 @@ parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
 parser.add_argument('--n_samples', type=int, default=20)
 parser.add_argument('--n_class', type=int, default=3)
-parser.add_argument('--n_malicious', type=int, default=0, help="number of malicious nodes in the network")
+parser.add_argument('--n_malicious', type=int, default=3, help="number of malicious nodes in the network")
 parser.add_argument('--mal_vs', type=int, default=0, help="malicious validators will disturb votes (or later add randomly drop legitimate worker transactions)")
 parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
 # below for DataLoaders
@@ -92,8 +92,8 @@ parser.add_argument('--validation_method', type=int, default=2, help='1 - pure s
 parser.add_argument('--reward_method', type=int, default='2', help='1 - reward based on shapley acc diff, 2 - reward by individual test acc') # V1 - has to choose R1, V3 - has to choose R2, others can choose either. Used when reward, choose winining val, and resync chain 
 parser.add_argument('--voting_style', type=int, default='1', help='1 - vote by 1 and 0, select top n determined by assumed_attack_level and agg_models_portion, 2 - vote by 1 and -1, select only positive votes')
 
-parser.add_argument('--assumed_attack_level', type=float, default=0.5, help='Used in validation method 2 and 3, to determine how many models to vote 1')
-parser.add_argument('--agg_models_portion', type=float, default=1.0, help='Determine how many models to use for final aggregation based on votes, usually (1 - assumed_attack_level). Used in voting_style==1')
+parser.add_argument('--assumed_attack_level', type=float, default=0.15, help='Used in validation method 2 and 3, to determine how many models to vote 1')
+parser.add_argument('--agg_models_portion', type=float, default=0.85, help='Determine how many models to use for final aggregation based on votes, usually (1 - assumed_attack_level). Used in voting_style==1')
 parser.add_argument('--z_counts', type=int, default=1, help='Counts of zscores, used in standard deviation based validation (method 2)')
 parser.add_argument('--vote_than_fork', type=int, default=1, help='If set to 1, validators will exchange and aggregate voting methods. If not, validator will just choose its filtered out models for aggregation and broadcast a block - the block_fork method')
 
@@ -113,9 +113,9 @@ parser.add_argument('--diff_freq', type=int, default=2, help='difficulty increas
 # parser.add_argument('--warm_mask', type=int, default=1, help='warm mask as a new comer')
 
 ####################### blockchain setting #######################
-parser.add_argument('--n_devices', type=int, default=6)
+parser.add_argument('--n_devices', type=int, default=20)
 
-parser.add_argument('--n_workers', type=str, default='3', 
+parser.add_argument('--n_workers', type=str, default='12', 
                     help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of workers and validators are random from round to round')
 parser.add_argument('--v_portion', type=float, default=1,
                     help='this determins how many validators should one worker send txs to. e.g., there are 6 validators in the network and v_portion = 0.5, then one worker will send tx to 6*0.5=3 validators')
@@ -152,7 +152,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime(f"method_{args.validation_method}_mal_vs_{args.mal_vs}_seed_{args.seed}_wos_{args.n_workers}_vas_{int((args.n_devices - int(args.n_workers)) * args.v_portion)}_mali_{args.n_malicious}_inc_{args.diff_incre}_freq_{args.diff_freq}_{args.run_note}_reward_method_{args.reward_method}_opt_{args.optimizer}_%m%d%Y_%H%M%S")
+    wandb.run.name = datetime.now().strftime(f"val_{args.validation_method}_reward_{args.reward_method}_voting_{args.voting_style}_malvs_{args.mal_vs}_seed_{args.seed}_%m%d%Y_%H%M%S")
     wandb.config.update(args)
     
     ######## initiate devices ########
