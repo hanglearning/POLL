@@ -616,8 +616,6 @@ class Device():
     # validation_method == 2, malicious validators flip votes (but they probably do not want to do that)
     def filter_valuation(self, idx_to_device, worker_idx_to_model):
 
-        top_models_count = round(len(worker_idx_to_model) * (1 - self.args.assumed_attack_level))
-
         def prepare_vote_1_models(model_df):
             # return the models to be used mapped to its accuracy
             model_to_indi_acc = {}
@@ -644,7 +642,12 @@ class Device():
 
         df_selected_models, df_unselected_models = self.filter_by_acc_z_score(worker_to_acc_top_to_low, idx_to_device)
 
-        
+        # further process df_selected_models by top n models
+        top_models_count = round(len(worker_idx_to_model) * (1 - self.args.assumed_attack_level))
+        df_selected_models = df_selected_models.sort_values('acc', ascending=False)
+        df_unselected_models = pd.concat([df_selected_models[top_models_count:], df_unselected_models])
+        df_selected_models = df_selected_models[:top_models_count]
+
         if self.args.mal_vs and self._is_malicious:
             # use the unselected_models
             v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_vote_1_models(df_unselected_models)
@@ -664,12 +667,12 @@ class Device():
                             self.args.test_verbose)['Accuracy'][0]
             
             acc_difference = base_aggr_model_acc - exclu_aggr_model_acc
-            validator_tx = self.form_validator_tx(worker_idx, model_vote=1, shapley_diff_rewards=acc_difference, indi_acc_rewards=v1_model_to_indi_acc[worker_idx_to_model[worker_idx]])
+            validator_tx = self.form_validator_tx(worker_idx, model_vote=self.args.POS_VOTE, shapley_diff_rewards=acc_difference, indi_acc_rewards=v1_model_to_indi_acc[worker_idx_to_model[worker_idx]])
             validator_txes.append(validator_tx)
 
-        # for vote=0 models, shapley_diff_rewards=0
+        # for filtered out models, shapley_diff_rewards=0
         for worker_idx, acc in v0_worker_to_indi_acc.items():
-            validator_tx = self.form_validator_tx(worker_idx, model_vote=0, indi_acc_rewards=acc)
+            validator_tx = self.form_validator_tx(worker_idx, model_vote=self.args.NEG_VOTE, indi_acc_rewards=acc)
 
         self._validator_txs = validator_txes
             
@@ -691,18 +694,18 @@ class Device():
             if worker_iter < pos_vote_models_count:
                 # positive vote
                 if self.args.mal_vs and self._is_malicious:
-                    vote = 0
+                    vote = self.args.NEG_VOTE
                     indi_acc_rewards=worker_to_acc_top_to_low[reversed_worker_idx]
                 else:
-                    vote = 1
+                    vote = self.args.POS_VOTE
                     indi_acc_rewards=worker_to_acc_top_to_low[worker_idx]
             else:
                 # negative vote
                 if self.args.mal_vs and self._is_malicious:
-                    vote = 1
+                    vote = self.args.POS_VOTE
                     indi_acc_rewards=worker_to_acc_top_to_low[reversed_worker_idx]
                 else:
-                    vote = 0
+                    vote = self.args.NEG_VOTE
                     indi_acc_rewards=worker_to_acc_top_to_low[worker_idx]
             validator_tx = self.form_validator_tx(worker_idx, model_vote = vote, indi_acc_rewards=indi_acc_rewards)
             validator_txes.append(validator_tx)
@@ -735,10 +738,9 @@ class Device():
                 ingredients.append(model)
                 worker_idx_to_diff_acc[worker_idx] = to_compare_acc - last_acc
                 last_acc = to_compare_acc
-                worker_idx_to_vote[worker_idx] = 1
+                worker_idx_to_vote[worker_idx] = self.args.POS_VOTE
             else:
-                # worker_idx_to_vote[worker_idx] = 0
-                worker_idx_to_vote[worker_idx] = -1
+                worker_idx_to_vote[worker_idx] = self.args.NEG_VOTE
                 worker_idx_to_diff_acc[worker_idx] = to_compare_acc - last_acc
 
         if self.args.mal_vs and self._is_malicious:
@@ -794,7 +796,7 @@ class Device():
 
         # sum up model votes
         worker_to_votes = {}
-        pos_model_votes = 0 # for validation_method == 4
+        pos_model_votes = 0 # for voting_style == 2
         for worker_idx, corresponding_validators_txes in self._received_validator_txs.items():
             model_votes = sum([validator_tx['7. validator_vote'] for validator_tx in corresponding_validators_txes])
             pos_model_votes += 1 if model_votes >= 0 else 0
@@ -804,15 +806,16 @@ class Device():
         # sort votes by decreasing order, and 
         workers_votes_high_to_low = [w_idx for w_idx, votes in sorted(worker_to_votes.items(), key=lambda item: item[1], reverse=True)]
 
-        if self.args.validation_method == 4:
-            top_models_count = pos_model_votes
-        else:
+        #determine top voted models
+        if self.args.voting_style == 1:
             # calculate how many models to choose by # of unique workers times the assumed_attack_level
-            top_models_count = round(len(self._received_validator_txs) * self.args.agg_models_portion)
-            #determine top voted models
+            to_use_models_count = round(len(self._received_validator_txs) * self.args.agg_models_portion)
+        elif self.args.voting_style == 2:
+            to_use_models_count = pos_model_votes
+            
 
         # choose models for final aggregation
-        chosen_workers = workers_votes_high_to_low[:top_models_count]
+        chosen_workers = workers_votes_high_to_low[:to_use_models_count]
         for worker_idx in chosen_workers:
             corresponding_validators_txes = self._received_validator_txs[worker_idx]
             # worker_shap_diff_rewards = sum([validator_tx['8. shapley_diff_rewards'] for validator_tx in corresponding_validators_txes])
@@ -834,7 +837,7 @@ class Device():
             dup_used_worker_txes[worker_idx] = corresponding_validators_txes
 
         # for unused transactions, also record them to identify global participating validators
-        unchosen_workers = workers_votes_high_to_low[top_models_count:]
+        unchosen_workers = workers_votes_high_to_low[to_use_models_count:]
 
         for worker_idx in unchosen_workers:
             unused_worker_txes[worker_idx] = self._received_validator_txs[worker_idx]
