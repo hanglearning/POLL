@@ -153,6 +153,8 @@ def main():
 
     exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
     log_dirpath = f"{args.logs_base_folder}/POLL_BLKC/{exe_date_time}"
+    os.makedirs(log_dirpath)
+
 
     ######## setup wandb ########
     wandb.login()
