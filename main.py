@@ -62,6 +62,8 @@ parser.add_argument('--wandb_project', type=str, default=None)
 parser.add_argument('--run_note', type=str, default=None)
 parser.add_argument('--debug_validation', type=int, default=1, help='show validation process detail')
 parser.add_argument('--log_model_acc_freq', type=int, default=1, help='frequency of logging global model individual and global test accuracy')
+parser.add_argument('-lb', '--logs_base_folder', type=str, default="/content/drive/MyDrive/POLL", help='base folder dir to store running logs')
+
 
 ####################### federated learning setting #######################
 parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
@@ -149,10 +151,13 @@ def main():
     args.dev_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(f"Using device {args.dev_device}")
 
+    exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
+    log_dirpath = f"{args.logs_base_folder}/POLL_BLKC/{exe_date_time}"
+
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = datetime.now().strftime(f"val_{args.validation_method}_reward_{args.reward_method}_voting_{args.voting_style}_malvs_{args.mal_vs}_seed_{args.seed}_%m%d%Y_%H%M%S")
+    wandb.run.name = f"val_{args.validation_method}_reward_{args.reward_method}_voting_{args.voting_style}_malvs_{args.mal_vs}_seed_{args.seed}_{exe_date_time}"
     wandb.config.update(args)
     
     ######## initiate devices ########
@@ -163,6 +168,7 @@ def main():
     dataset_name=args.dataset,
     n_class=args.n_class,
     nsamples=args.n_samples,
+    log_dirpath=log_dirpath,
     mode=args.dataset_mode,
     batch_size=args.batch_size,
     rate_unbalance=args.rate_unbalance,
@@ -179,6 +185,7 @@ def main():
     for device in devices_list:
         device.assign_peers(idx_to_device)
     
+    malicious_block_record = []
     ######## Fed-POLL ########
     for comm_round in range(1, args.comm_rounds + 1):
         
@@ -333,13 +340,13 @@ def main():
                 if idx_to_device[block_produced_by]._is_malicious:
                    malicious_block = 1
                    break
-        wandb.log({"comm_round": comm_round, "malicious_block": malicious_block})
+        malicious_block_record.append([comm_round, malicious_block])
             
         #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
         #     print(f"Length: {device.blockchain.get_chain_length()}")
 
-        
-        
+    wandb.log({"malicious_block" : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Device Wins")})
+
         
 
 if __name__ == "__main__":

@@ -11,12 +11,13 @@ from dataset.mnist_noniid import get_dataset_mnist_extr_noniid, mnist_extr_nonii
 # gets whatever is left after other users had their shares
 
 
-def DataLoaders(n_devices, dataset_name, n_class, nsamples, mode="non-iid", batch_size=32, rate_unbalance=1.0, num_workers=1):
+def DataLoaders(n_devices, dataset_name, n_class, nsamples, log_dirpath, mode="non-iid", batch_size=32, rate_unbalance=1.0, num_workers=1):
     if mode == "non-iid":
         if dataset_name == "mnist":
             return get_data_noniid_mnist(n_devices,
                                          n_class,
                                          nsamples,
+                                         log_dirpath,
                                          batch_size,
                                          rate_unbalance,
                                          num_workers)
@@ -24,6 +25,7 @@ def DataLoaders(n_devices, dataset_name, n_class, nsamples, mode="non-iid", batc
             return get_data_noniid_cifar10(n_devices,
                                            n_class,
                                            nsamples,
+                                           log_dirpath,
                                            batch_size,
                                            rate_unbalance,
                                            num_workers)
@@ -80,10 +82,10 @@ def iid_split(num_clients,
     return user_train_loaders, user_test_loaders
 
 
-def get_data_noniid_cifar10(n_devices, n_class, nsamples, batch_size=32, rate_unbalance=1.0, num_workers=1):
+def get_data_noniid_cifar10(n_devices, n_class, nsamples, log_dirpath, batch_size=32, rate_unbalance=1.0, num_workers=1):
 
     train_data, test_data, user_train, user_test, user_labels = get_dataset_cifar10_extr_noniid(
-        n_devices, n_class, nsamples, rate_unbalance)
+        n_devices, n_class, nsamples, rate_unbalance, log_dirpath)
 
     train_loaders = []
     test_loaders = []
@@ -116,10 +118,10 @@ def get_data_noniid_cifar10(n_devices, n_class, nsamples, batch_size=32, rate_un
     return train_loaders, test_loaders, user_labels, global_test_loader
 
 
-def get_data_noniid_mnist(n_devices, n_class, nsamples, batch_size=32, rate_unbalance=1.0, num_workers=1):
+def get_data_noniid_mnist(n_devices, n_class, nsamples, log_dirpath, batch_size=32, rate_unbalance=1.0, num_workers=1):
 
     train_data, test_data, user_train, user_test, user_labels = get_dataset_mnist_extr_noniid(
-        n_devices, n_class, nsamples, rate_unbalance)
+        n_devices, n_class, nsamples, rate_unbalance, log_dirpath)
 
     train_loaders = []
     test_loaders = []

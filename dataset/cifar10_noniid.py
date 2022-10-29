@@ -2,7 +2,7 @@ import numpy as np
 from torchvision import datasets, transforms
 
 
-def get_dataset_cifar10_extr_noniid(n_devices, n_class, nsamples, rate_unbalance):
+def get_dataset_cifar10_extr_noniid(n_devices, n_class, nsamples, rate_unbalance, log_dirpath):
     data_dir = './data'
     apply_transform = transforms.Compose(
         [transforms.ToTensor(),
@@ -15,11 +15,11 @@ def get_dataset_cifar10_extr_noniid(n_devices, n_class, nsamples, rate_unbalance
 
     # Chose equal splits for every user
     user_groups_train, user_groups_test, user_groups_labels = cifar_extr_noniid(
-        train_dataset, test_dataset, n_devices, n_class, nsamples, rate_unbalance)
+        train_dataset, test_dataset, n_devices, n_class, nsamples, rate_unbalance, log_dirpath)
     return train_dataset, test_dataset, user_groups_train, user_groups_test, user_groups_labels
 
 
-def cifar_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_samples, rate_unbalance):
+def cifar_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_samples, rate_unbalance, log_dirpath):
     num_shards_train, num_imgs_train = int(50000/num_samples), num_samples
     num_classes = 10
     num_imgs_perc_test, num_imgs_test_total = 1000, 10000
@@ -67,15 +67,24 @@ def cifar_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
             idx_shards[j] = np.delete(
                 idx_shards[j], np.where(idx_shards[j] == choice))
         unbalance_flag = 0
-        for rand in rand_set:
+        for rand_iter in range(len(rand_set)):	
+            rand = rand_set[rand_iter]
             if unbalance_flag == 0:
                 dict_users_train[i] = np.concatenate(
                     (dict_users_train[i], idxs[rand*num_imgs_train:(rand+1)*num_imgs_train]), axis=0)
+                display_text = f"user {i} assigned label {temp_set[rand_iter]} with quantity {len(idxs[rand*num_imgs_train:(rand+1)*num_imgs_train])}"
+                with open(f'{log_dirpath}/dataset_assigned.txt', 'w') as f:
+                    f.write(display_text)
+                print(display_text)
                 user_labels = np.concatenate(
                     (user_labels, labels[rand*num_imgs_train:(rand+1)*num_imgs_train]), axis=0)
             else:
                 dict_users_train[i] = np.concatenate(
                     (dict_users_train[i], idxs[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)]), axis=0)
+                display_text = f"user {i} assigned label {temp_set[rand_iter]} with quantity {len(idxs[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)])}"
+                with open(f'{log_dirpath}/dataset_assigned.txt', 'w') as f:
+                    f.write(display_text)
+                print(display_text)
                 user_labels = np.concatenate(
                     (user_labels, labels[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)]), axis=0)
             unbalance_flag = 1
