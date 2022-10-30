@@ -72,7 +72,7 @@ def mnist_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
                     (dict_users_train[i], idxs[rand*num_imgs_train:(rand+1)*num_imgs_train]), axis=0)
                 display_text = f"user {i} assigned label {temp_set[rand_iter]} with quantity {len(idxs[rand*num_imgs_train:(rand+1)*num_imgs_train])}"
                 with open(f'{log_dirpath}/dataset_assigned.txt', 'a') as f:
-                    f.write(display_text)
+                    f.write(f'{display_text}\n')
                 print(display_text)
                 user_labels = np.concatenate(
                     (user_labels, labels[rand*num_imgs_train:(rand+1)*num_imgs_train]), axis=0)
@@ -81,7 +81,7 @@ def mnist_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
                     (dict_users_train[i], idxs[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)]), axis=0)
                 display_text = f"user {i} assigned label {temp_set[rand_iter]} with quantity {len(idxs[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)])}"
                 with open(f'{log_dirpath}/dataset_assigned.txt', 'a') as f:
-                    f.write(display_text)
+                    f.write(f'{display_text}\n')
                 print(display_text)
                 user_labels = np.concatenate(
                     (user_labels, labels[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)]), axis=0)
