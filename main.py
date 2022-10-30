@@ -163,7 +163,8 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.run.name = f"val_{args.validation_method}_reward_{args.reward_method}_voting_{args.voting_style}_malvs_{args.mal_vs}_seed_{args.seed}_{exe_date_time}"
+    run_name = f"val_{args.validation_method}_reward_{args.reward_method}_voting_{args.voting_style}_malvs_{args.mal_vs}_seed_{args.seed}_{exe_date_time}"
+    wandb.run.name = run_name
     wandb.config.update(args)
     
     ######## initiate devices ########
@@ -192,6 +193,7 @@ def main():
         device.assign_peers(idx_to_device)
     
     malicious_block_record = []
+    malicious_winning_count = 0
     ######## Fed-POLL ########
     for comm_round in range(1, args.comm_rounds + 1):
         
@@ -345,14 +347,20 @@ def main():
                 block_produced_by = device.blockchain.get_last_block().produced_by
                 if idx_to_device[block_produced_by]._is_malicious:
                    malicious_block = 1
+                   malicious_winning_count += 1
+                   with open(f'{log_dirpath}/malicious_winning_record.txt', 'a') as f:
+                    f.write(f'{comm_round}\n')
                    break
         malicious_block_record.append([comm_round, malicious_block])
             
         #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
         #     print(f"Length: {device.blockchain.get_chain_length()}")
-
+    
+    print(f"{malicious_winning_count}/{comm_round} times malicious device won a block.")
+    with open(f'{log_dirpath}/malicious_winning_record.txt', 'a') as f:
+        f.write(f'Total times: malicious_winning_count/{comm_round}\n')
     malicious_block_record = wandb.Table(data=malicious_block_record, columns = ["comm_round", "malicious_block"])
-    wandb.log({"malicious_block" : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Device Wins")})
+    wandb.log({run_name : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Device Wins")})
 
         
 
