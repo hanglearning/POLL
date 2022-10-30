@@ -346,6 +346,7 @@ def main():
         #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
         #     print(f"Length: {device.blockchain.get_chain_length()}")
 
+    malicious_block_record = wandb.Table(data=malicious_block_record, columns = ["comm_round", "malicious_block"])
     wandb.log({"malicious_block" : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Device Wins")})
 
         
