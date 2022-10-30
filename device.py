@@ -616,7 +616,7 @@ class Device():
     # validation_method == 2, malicious validators flip votes (but they probably do not want to do that)
     def filter_valuation(self, idx_to_device, worker_idx_to_model):
 
-        def prepare_vote_1_models(model_df):
+        def prepare_pos_models(model_df):
             # return the models to be used mapped to its accuracy
             model_to_indi_acc = {}
             selected_worker_idx_to_model = {}
@@ -627,7 +627,7 @@ class Device():
                 selected_worker_idx_to_model[worker_idx] = worker_idx_to_model[worker_idx]
             return model_to_indi_acc, selected_worker_idx_to_model
         
-        def prepare_vote_0_models(model_df):
+        def prepare_neg_models(model_df):
             worker_to_indi_acc = {}
             for iter in range(min(top_models_count, len(model_df))):
                 worker_idx = int(model_df[iter:iter+1].iloc[0]['worker_idx'])
@@ -640,21 +640,30 @@ class Device():
 
         worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
 
+        # for models with accuracy 0, give NEG_VOTE
+        # TODO - mal validator
+        temp_worker_to_acc = copy(worker_to_acc_top_to_low)
+        for worker_idx, acc in  temp_worker_to_acc.items():
+            if acc == 0:
+                validator_tx = self.form_validator_tx(worker_idx, model_vote=self.args.NEG_VOTE, indi_acc_rewards=acc)
+                validator_txes.append(validator_tx)
+                worker_to_acc_top_to_low.pop(worker_idx)
+                
         df_selected_models, df_unselected_models = self.filter_by_acc_z_score(worker_to_acc_top_to_low, idx_to_device)
 
         # further process df_selected_models by top n models
-        top_models_count = round(len(worker_idx_to_model) * (1 - self.args.assumed_attack_level))
+        top_models_count = round(len(worker_idx_to_model) * self.args.single_val_agg_models_portion)
         df_selected_models = df_selected_models.sort_values('acc', ascending=False)
         df_unselected_models = pd.concat([df_selected_models[top_models_count:], df_unselected_models])
         df_selected_models = df_selected_models[:top_models_count]
 
         if self.args.mal_vs and self._is_malicious:
             # use the unselected_models
-            v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_vote_1_models(df_unselected_models)
-            v0_worker_to_indi_acc = prepare_vote_0_models(df_selected_models)
+            v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_pos_models(df_unselected_models)
+            v0_worker_to_indi_acc = prepare_neg_models(df_selected_models)
         else:
-            v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_vote_1_models(df_selected_models)
-            v0_worker_to_indi_acc = prepare_vote_0_models(df_unselected_models)
+            v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_pos_models(df_selected_models)
+            v0_worker_to_indi_acc = prepare_neg_models(df_unselected_models)
 
         # for vote=1 models, calcuate shaply value accuracy difference for rewards_method_1
         base_aggr_model_acc = self.shapley_value_get_base_acc(list(v1_model_to_indi_acc.keys()))
@@ -673,6 +682,7 @@ class Device():
         # for filtered out models, shapley_diff_rewards=0
         for worker_idx, acc in v0_worker_to_indi_acc.items():
             validator_tx = self.form_validator_tx(worker_idx, model_vote=self.args.NEG_VOTE, indi_acc_rewards=acc)
+            validator_txes.append(validator_tx)
 
         self._validator_txs = validator_txes
             
@@ -680,7 +690,7 @@ class Device():
     # validation_method == 3, malicious validators flip votes and reverse rewards (but they probably do not want to do that)
     def assumed_attack_level_validation(self, worker_idx_to_model):
 
-        pos_vote_models_count = round(len(worker_idx_to_model) * (1 - self.args.assumed_attack_level))
+        pos_vote_models_count = round(len(worker_idx_to_model) * self.args.single_val_agg_models_portion)
         
         worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
         worker_ranked_acc_top_to_low = list(worker_to_acc_top_to_low.keys())
@@ -808,8 +818,8 @@ class Device():
 
         #determine top voted models
         if self.args.voting_style == 1:
-            # calculate how many models to choose by # of unique workers times the assumed_attack_level
-            to_use_models_count = round(len(self._received_validator_txs) * self.args.agg_models_portion)
+            # calculate how many models to choose by # of unique workers times the final_agg_models_portion
+            to_use_models_count = round(len(self._received_validator_txs) * self.args.final_agg_models_portion)
         elif self.args.voting_style == 2:
             to_use_models_count = pos_model_votes
             

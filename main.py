@@ -51,7 +51,6 @@ parser = argparse.ArgumentParser(description='POLL - Proof Of Lottery Learning')
 
 ####################### system setting #######################
 parser.add_argument('--save_freq', type=int, default=10)
-parser.add_argument('--log_dir', type=str, default="./logs")
 parser.add_argument('--train_verbose', type=bool, default=False)
 parser.add_argument('--test_verbose', type=bool, default=False)
 parser.add_argument('--prune_verbose', type=bool, default=False)
@@ -62,7 +61,7 @@ parser.add_argument('--wandb_project', type=str, default=None)
 parser.add_argument('--run_note', type=str, default=None)
 parser.add_argument('--debug_validation', type=int, default=1, help='show validation process detail')
 parser.add_argument('--log_model_acc_freq', type=int, default=1, help='frequency of logging global model individual and global test accuracy')
-parser.add_argument('-lb', '--logs_base_folder', type=str, default="/content/drive/MyDrive/POLL", help='base folder dir to store running logs')
+parser.add_argument('-lb', '--logs_base_folder', type=str, default="./POLL_BLKC", help='base folder dir to store running logs')
 
 
 ####################### federated learning setting #######################
@@ -91,10 +90,10 @@ parser.add_argument('--pass_all_models', type=int, default=0, help='turn off val
 
 parser.add_argument('--validation_method', type=int, default=2, help='1 - pure shapley value based, 2 - filter valuation, 3 - attack level based, 4 - greedy soup inspired')
 parser.add_argument('--reward_method', type=int, default='2', help='1 - reward based on shapley acc diff, 2 - reward by individual test acc') # V1 - has to choose R1, V3 - has to choose R2, others can choose either. Used when reward, choose winining val, and resync chain 
-parser.add_argument('--voting_style', type=int, default='1', help='1 - vote by 1 and 0, select top n determined by assumed_attack_level and agg_models_portion, 2 - vote by 1 and -1, select only positive votes')
+parser.add_argument('--voting_style', type=int, default='1', help='1 - vote by 1 and 0, select top n determined by single_val_agg_models_portion and final_agg_models_portion, 2 - vote by 1 and -1, select only positive votes')
 
-parser.add_argument('--assumed_attack_level', type=float, default=0.3, help='Used in validation method 2 and 3, to determine how many models to vote 1')
-parser.add_argument('--agg_models_portion', type=float, default=0.7, help='Determine how many models to use for final aggregation based on votes, usually (1 - assumed_attack_level). Used in voting_style==1')
+parser.add_argument('--single_val_agg_models_portion', type=float, default=1, help='Used in validation method 2 and 3, to determine how many models to vote 1. For a conservative validator, it can assume an attack level, such as 30%, then single_val_agg_models_portion will be 0.7. Usually this voting process should be relaxed and attack level should be assumed when doing final aggregation, controled by final_agg_models_portion')
+parser.add_argument('--final_agg_models_portion', type=float, default=0.7, help='Determine how many models to use for final aggregation based on votes. Used in voting_style==1')
 parser.add_argument('--z_counts', type=int, default=1, help='Counts of zscores, used in standard deviation based validation (method 2)')
 parser.add_argument('--vote_than_fork', type=int, default=1, help='If set to 1, validators will exchange and aggregate voting methods. If not, validator will just choose its filtered out models for aggregation and broadcast a block - the block_fork method')
 
@@ -151,7 +150,13 @@ def main():
     print(f"Using device {args.dev_device}")
 
     exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
-    log_dirpath = f"{args.logs_base_folder}/POLL_BLKC/{exe_date_time}"
+    try:
+        # on Google Drive     
+        import google.colab
+        log_dirpath = f"/content/drive/MyDrive/POLL_BLKC/{exe_date_time}"
+    except:
+        # local
+        log_dirpath = f"{args.logs_base_folder}/{exe_date_time}"
     os.makedirs(log_dirpath)
 
 
