@@ -184,7 +184,7 @@ class Device():
         self.prune()
         self.reinit_params()
         self.train()
-        # self.test_indi_accuracy(comm_round)
+        # self.test_indi_accuracy(comm_round); may test accuracy for local test set here, at least CELL does it
         # if malicious, introduce noise
         if self._is_malicious:
             self.poison_model()

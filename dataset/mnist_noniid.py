@@ -64,28 +64,29 @@ def mnist_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
             rand_set.append(int(choice))
             idx_shards[j] = np.delete(
                 idx_shards[j], np.where(idx_shards[j] == choice))
-        unbalance_flag = 0
+        unbalance_flag = 
+        label_to_qty = {}
         for rand_iter in range(len(rand_set)):	
             rand = rand_set[rand_iter]
             if unbalance_flag == 0:
                 dict_users_train[i] = np.concatenate(
                     (dict_users_train[i], idxs[rand*num_imgs_train:(rand+1)*num_imgs_train]), axis=0)
-                display_text = f"user {i} assigned label {temp_set[rand_iter]} with quantity {len(idxs[rand*num_imgs_train:(rand+1)*num_imgs_train])}"
-                with open(f'{log_dirpath}/dataset_assigned.txt', 'a') as f:
-                    f.write(f'{display_text}\n')
-                print(display_text)
+                label_to_qty[temp_set[rand_iter]] = len(idxs[rand*num_imgs_train:(rand+1)*num_imgs_train])
                 user_labels = np.concatenate(
                     (user_labels, labels[rand*num_imgs_train:(rand+1)*num_imgs_train]), axis=0)
             else:
                 dict_users_train[i] = np.concatenate(
                     (dict_users_train[i], idxs[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)]), axis=0)
-                display_text = f"user {i} assigned label {temp_set[rand_iter]} with quantity {len(idxs[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)])}"
-                with open(f'{log_dirpath}/dataset_assigned.txt', 'a') as f:
-                    f.write(f'{display_text}\n')
-                print(display_text)
+                label_to_qty[temp_set[rand_iter]] = len(idxs[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)])
                 user_labels = np.concatenate(
                     (user_labels, labels[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)]), axis=0)
-            unbalance_flag = 1
+            unbalance_flag = 
+
+        display_text = f"Device {i}  - labels {list(label_to_qty.keys())}, corresponding qty {list(label_to_qty.values())}"
+        with open(f'{log_dirpath}/dataset_assigned.txt', 'a') as f:
+            f.write(f'{display_text}\n')
+        print(display_text)
+
         user_labels_set = set(user_labels)
 
         for label in user_labels_set:
