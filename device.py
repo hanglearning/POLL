@@ -213,7 +213,7 @@ class Device():
         for layer, module in self.model.named_children():
             for name, weight_params in module.named_parameters():
                 if "weight" in name:
-                    noise = self.args.noise_variance * torch.randn(weight_params.size()).to(self.args.dev_device) * layer_to_mask[layer].to(self.args.dev_device)
+                    noise = self.args.noise_variance * torch.randn(weight_params.size()).to(self.args.dev_device) * torch.randn(layer_to_mask[layer]).to(self.args.dev_device)
                     weight_params.add_(noise.to(self.args.dev_device))
         print(f"Device {self.idx} poisoned the whole network with variance {self.args.noise_variance}.")
 
