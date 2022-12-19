@@ -110,41 +110,24 @@ def produce_mask_from_model(model):
                     mask[pos] = 0
                     
 @torch.no_grad()
-def fedavg(models, device):
+def fed_avg(models: List[nn.Module], weight: float, device='cuda:0'):
+    """
+        models: list of nn.modules(unpruned/pruning removed)
+        weights: normalized weights for each model
+        cls:  Class of original model
+    """
     aggr_model = models[0].__class__().to(device)
+    model_params = []
+    num_models = len(models)
+    for model in models:
+        model_params.append(dict(model.named_parameters()))
+
     for name, param in aggr_model.named_parameters():
         param.data.copy_(torch.zeros_like(param.data))
-        for model in models:
+        for i in range(num_models):
             weighted_param = torch.mul(
-                dict(model.named_parameters())[name].data, 1/len(models))
+                model_params[i][name].data, weight)
             param.data.copy_(param.data + weighted_param)
-    return aggr_model    
-
-def fedavg_workeryfl(models, device):
-    # print("Using workeryFL aggregation style.")
-    aggr_model = models[0].__class__().to(device)
-    # sum all masks values
-    layer_to_mask_sum = {}
-    for model in models:
-        produce_mask_from_model(model)
-        for layer, module in model.named_children():
-            for name, mask in module.named_buffers():
-                if 'mask' in name:
-                    layer_to_mask_sum[layer] = layer_to_mask_sum.get(layer, torch.zeros_like(mask)) + mask
-        # revoke mask
-        pytorch_make_prune_permanent(model)
-    # sum all weight values
-    layer_to_weight_sum = {}
-    for model in models:
-        for name, param in model.named_parameters():
-            layer_to_weight_sum[name.split('_')[0]] = layer_to_weight_sum.get(name, torch.zeros_like(param)) + param
-    # divide
-    for name, param in aggr_model.named_parameters():
-        if 'weight' in name:
-            # divide by 0 becomes nan, need to replace by 0
-            param.data.copy_(torch.nan_to_num(layer_to_weight_sum[name] / layer_to_mask_sum[name.split('.')[0]]))
-        else:
-            param.data.copy_(layer_to_weight_sum[name])
     return aggr_model
 
 def apply_local_mask(model, mask):
@@ -175,7 +158,7 @@ def copy_model(model: nn.Module, device='cuda:0'):
         Returns a copy of the input model.
         Note: the model should have been pruned for this method to work to create buffer masks and whatnot.
     """
-    new_model = create_model_no_prune(model.__class__, device)
+    new_model = create_model(model.__class__, device)
     source_params = dict(model.named_parameters())
     source_buffer = dict(model.named_buffers())
     for name, param in new_model.named_parameters():
@@ -355,79 +338,104 @@ def pytorch_make_prune_permanent(model):
 
 
 
-def custom_save(model, path):
+def get_trainable_model_weights(model):
     """
-    https://pytorch.org/docs/stable/generated/torch.save.html#torch.save
-    Custom save utility function
-    Compresses the model using gzip
-    Helpfull if model is highly pruned
+    Args:
+        model (_torch model_): NN Model
+
+    Returns:
+        layer_to_param _dict_: you know!
     """
-    bufferIn = io.BytesIO()
-    torch.save(model.state_dict(), bufferIn)
-    bufferOut = gzip.compress(bufferIn.getvalue())
-    with gzip.open(path, 'wb') as f:
-        f.write(bufferOut)
+    layer_to_param = {} 
+    for layer_name, param in model.named_parameters():
+        if 'weight' in layer_name:
+            layer_to_param[layer_name.split('.')[0]] = param.cpu().detach().numpy()
+    return layer_to_param
+
+def calc_mask_from_model_with_mask_object(model):
+    layer_to_mask = {}
+    for layer, module in model.named_children():
+        for name, mask in module.named_buffers():
+            if 'mask' in name:
+                layer_to_mask[layer] = mask
+    return layer_to_mask
+
+def calc_mask_from_model_without_mask_object(model):
+    layer_to_mask = {}
+    for layer, module in model.named_children():
+        for name, weight_params in module.named_parameters():
+            if 'weight' in name:
+                layer_to_mask[layer] = np.ones_like(weight_params.cpu())
+                layer_to_mask[layer][weight_params.cpu() == 0] = 0
+    return layer_to_mask
 
 
-def custom_load(path) -> Dict:
-    """
-    returns saved_dictionary
-    """
-    with gzip.open(path, 'rb') as f:
-        bufferIn = f.read()
-        bufferOut = gzip.decompress(bufferIn)
-        state_dict = torch.load(io.BytesIO(bufferOut))
-    return state_dict
-
-
-def log_obj(path, obj):
-    # pass
-    if not os.path.exists(os.path.dirname(path)):
-        try:
-            os.makedirs(os.path.dirname(path))
-        except OSError as exc:  # Guard against race condition
-            if exc.errno != errno.EEXIST:
-                raise
-    #
-    with open(path, 'wb') as file:
-        if isinstance(obj, nn.Module):
-            torch.save(obj, file)
-        else:
-            pickle.dump(obj, file)
-
-
-class CustomPruneMethod(prune.BasePruningMethod):
-
-    PRUNING_TYPE = 'unstructured'
-
-    def __init__(self, amount, orig_weights):
-        super().__init__()
-        self.amount = amount
-        self.original_signs = self.get_signs_from_tensor(orig_weights)
-
-    def get_signs_from_tensor(self, t: torch.Tensor):
-        return torch.sign(t).view(-1)
-
-    def compute_mask(self, t, default_mask):
-        mask = default_mask.clone()
-        large_weight_mask = t.view(-1).mul(self.original_signs)
-        large_weight_mask_ranked = F.relu(large_weight_mask)
-        nparams_toprune = int(torch.numel(t) * self.amount)  # get this val
-        if nparams_toprune > 0:
-            bottom_k = torch.topk(
-                large_weight_mask_ranked.view(-1), k=nparams_toprune, largest=False)
-            mask.view(-1)[bottom_k.indices] = 0.00
-            return mask
-        else:
-            return mask
-
-
-def customPrune(module, orig_module, amount=0.1, name='weight'):
-    """
-        Taken from https://pytorch.org/tutorials/intermediate/pruning_tutorial.html
-        Takes: current module (module), name of the parameter to prune (name)
+def generate_2d_top_magnitude_mask(model_path, percent, check_whole = False, keep_sign = False):
 
     """
-    CustomPruneMethod.apply(module, name, amount, orig_module)
-    return module
+        returns 2d top magnitude mask.
+        1. keep_sign == True
+            it keeps the sign of the original weight. Used in introduce noise. 
+            returns mask with -1, 1, 0.
+        2. keep_sign == False
+            calculate absolute magitude mask. Used in calculating weight overlapping.
+            returns binary mask with 1, 0.
+    """
+    
+    layer_to_mask = {}
 
+    with open(model_path, 'rb') as f:
+        nn_layer_to_weights = pickle.load(f)
+            
+    for layer, param in nn_layer_to_weights.items():
+    
+        # take abs as we show magnitude values
+        abs_param = np.absolute(param)
+
+        mask_2d = np.empty_like(abs_param)
+        mask_2d[:] = 0 # initialize as 0
+
+        base_size = abs_param.size if check_whole else abs_param.size - abs_param[abs_param == 0].size
+
+        top_boundary = math.ceil(base_size * percent)
+                    
+        percent_threshold = -np.sort(-abs_param.flatten())[top_boundary]
+
+        # change top weights to 1
+        mask_2d[np.where(abs_param > percent_threshold)] = 1
+
+        # sanity check
+        # one_counts = (mask_2d == 1).sum()
+        # print(one_counts/param.size)
+
+        layer_to_mask[layer] = mask_2d
+        if keep_sign:
+            layer_to_mask[layer] *= np.sign(param)
+
+    # sanity check
+    # for layer in layer_to_mask:
+	#     print((layer_to_mask[layer] == 1).sum()/layer_to_mask[layer].size)
+
+    return layer_to_mask
+
+def calculate_overlapping_mask(model_paths, check_whole, percent, model_validation=False):
+    layer_to_masks = []
+
+    for model_path in model_paths:
+        layer_to_masks.append(generate_2d_top_magnitude_mask(model_path, percent, check_whole))
+
+    ref_layer_to_mask = layer_to_masks[0]
+
+    for layer_to_mask_iter in range(len(layer_to_masks[1:])):
+        layer_to_mask = layer_to_masks[1:][layer_to_mask_iter]
+        for layer, mask in layer_to_mask.items():
+            ref_layer_to_mask[layer] *= mask
+            if check_whole:
+                # for debug - when each local model has high overlapping with the last global model, why the overlapping ratio for all local models seems to be low?
+                if model_validation: # called by model_validation()
+                    print(f"Worker {model_paths[-1].split('/')[-2]}, layer {layer} - overlapping ratio on top {percent:.2%} is {(ref_layer_to_mask[layer] == 1).sum()/ref_layer_to_mask[layer].size/percent:.2%}")
+                else:
+                    print(f"iter {layer_to_mask_iter + 1}, layer {layer} - overlapping ratio on top {percent:.2%} is {(ref_layer_to_mask[layer] == 1).sum()/ref_layer_to_mask[layer].size/percent:.2%}")
+        print()
+
+    return ref_layer_to_mask

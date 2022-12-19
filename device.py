@@ -17,9 +17,8 @@ from util import *
 # from util import get_prune_summary, get_pruned_amount_by_weights, l1_prune, get_prune_params, copy_model, fedavg, fedavg_workeryfl, test_by_data_set, AddGaussianNoise, get_model_sig_sparsity, get_num_total_model_params, get_pruned_amount_from_mask, produce_mask_from_model, apply_local_mask, pytorch_make_prune_permanent
 from util import train as util_train
 from util import test_by_data_set
-
-import pandas as pd
-pd.set_option('display.max_columns', None)
+from pathlib import Path
+from sklearn.cluster import KMeans
 
 from copy import copy, deepcopy
 from Crypto.PublicKey import RSA
@@ -45,6 +44,7 @@ class Device():
         user_labels,
         global_test_loader,
         init_global_model,
+        init_global_model_path
     ):
         self.idx = idx
         self.args = args
@@ -56,7 +56,7 @@ class Device():
         self.global_test_loader = global_test_loader
         self.init_global_model = copy_model(init_global_model, args.dev_device)
         self.model = copy_model(init_global_model, args.dev_device)
-        self.model_sig = None
+        self.model_path = init_global_model_path
         # blockchain variables
         self.role = None
         self._is_malicious = is_malicious
@@ -64,15 +64,21 @@ class Device():
         # self.device_dict = None
         self.peers = None
         self.stake_book = None
-        self.blockchain = Blockchain(args.diff_base, args.diff_incre, args.diff_freq, args.target_spar)
+        self.blockchain = Blockchain()
         self._received_blocks = []
         self._black_list = {}
         self._resync_to = None
         # for workers
         self._worker_tx = None
+        self._associated_validators = set()
+        # CELL
+        self.cur_prune_rate = 0.00
+        self.eita_hat = self.args.eita
+        self.eita = self.eita_hat
+        self.alpha = self.args.alpha
+        self.prune_rates = []
         # for validators
         self._associated_workers = set()
-        self._associated_validators = set()
         self._validator_txs = []
         self._verified_worker_txs = {}
         self._received_validator_txs = {} # worker_id_to_corresponding_validator_txes
@@ -82,6 +88,8 @@ class Device():
         self._unused_worker_txes = {} # models NOT used in final ticket model
         self._dup_used_worker_txes = {}
         self.produced_block = None
+        self._iden_benigh_workers = None
+        self._worker_to_reward = {}
         # init key pair
         self.modulus = None
         self.private_key = None
@@ -157,7 +165,7 @@ class Device():
             
     def post_resync(self):
         # update global model from the new block
-        self.model = copy_model(self.blockchain.get_last_block().global_ticket_model, self.args.dev_device)            
+        self.model = deepcopy(self.blockchain.get_last_block().global_ticket_model)
     
     def validate_chain(self, chain_to_check):
         # shall use check_block_when_resyncing(block, last_block)
@@ -177,183 +185,140 @@ class Device():
         return hash == hashFromSignature     
     
     ######## workers method ########
-    
-    def ticket_learning(self, comm_round):
-        # 1. prune; 2. reinit; 3. train; 4. introduce noice;
-        print()
-        self.prune()
-        self.reinit_params()
-        self.train()
-        # self.test_indi_accuracy(comm_round); may test accuracy for local test set here, at least CELL does it
-        # if malicious, introduce noise
-        if self._is_malicious:
-            self.poison_model()
-        
-    def prune(self):
-        
-        identity = "malicious" if self._is_malicious else "legit"
 
-        already_pruned_amount = round(get_pruned_amount_by_weights(model=self.model), 2)
-        print(f"worker {self.idx} {identity} is pruning.\nCurrent pruned amount:{already_pruned_amount:.2%}")
-        curr_prune_diff = self.blockchain.get_cur_pruning_diff()
-        
-        if curr_prune_diff > already_pruned_amount:
-            self._reinit = True
-        
-        print(f"Current pruning difficulty: {curr_prune_diff}")
-        
-        if curr_prune_diff:
-            l1_prune(model=self.model,
-                    amount=curr_prune_diff,
-                    name='weight',
-                    verbose=self.args.prune_verbose)
-            
-            if not self.args.prune_verbose:
-                print(f"After pruning, pruned amount:{get_pruned_amount_by_mask(self.model):.2%}")
+    def save_model_weights_to_log(self, comm_round, epoch, global_model=False):
+        L_or_M = "M" if self._is_malicious else "L"
+        model_save_path = f"{self.args.log_dir}/models_weights/{L_or_M}_{self._user_labels}_{self.idx}"
+        Path(model_save_path).mkdir(parents=True, exist_ok=True)
+        trainable_model_weights = get_trainable_model_weights(self.model)
+
+        # apply mask just in case
+        layer_to_mask = calc_mask_from_model_with_mask_object(self.model)
+        if not layer_to_mask:
+            layer_to_mask = calc_mask_from_model_without_mask_object(self.model)
+        for layer in trainable_model_weights:
+            trainable_model_weights[layer] *= np.array(layer_to_mask[layer])
+
+        if global_model:
+            self.model_path = f"{model_save_path}/R{comm_round}.pkl"
+            with open(self.model_path, 'wb') as f:
+                pickle.dump(trainable_model_weights, f)
         else:
-            print("Prune skipped.")
+            self.last_local_model_path = f"{model_save_path}/R{comm_round}_E{epoch}.pkl"
+            with open(self.last_local_model_path, 'wb') as f:
+                pickle.dump(trainable_model_weights, f)
     
-                        
-    def reinit_params(self):
-        # reinit if prune_diff increased
-        if self._reinit:
-            source_params = dict(self.init_global_model.named_parameters())
-            for name, param in self.model.named_parameters():
-                param.data.copy_(source_params[name.split("_")[0]].data)
-            print(f"worker {self.idx} has reinitialized its parameters.")
-            self._reinit = False
+    def poison_model(self):
+        layer_to_mask = calc_mask_from_model_without_mask_object(self.model) # introduce noise to unpruned weights
+        for layer, module in self.model.named_children():
+            for name, weight_params in module.named_parameters():
+                if "weight" in name:
+                    noise = self.args.noise_variance * torch.randn(weight_params.size()).to(self.args.dev_device) * layer_to_mask[layer]
+                    weight_params.add_(noise.to(self.args.dev_device))
+        print(f"Device {self.idx} poisoned the whole network with variance {self.args.noise_variance}.")
+
+    def ticket_learning(self, comm_round):
+        # adapoted CELL pruning method
+        print()
+        print(f"\n----------Worker:{self.idx} CELL Update---------------------")
+
+        metrics = self.eval_model(self.model)
+        accuracy = metrics['Accuracy'][0]
+        print(f'Global model local accuracy before pruning and training: {accuracy}')
+
+        # global model prune percentage
+        prune_rate = get_prune_summary(model=self.model, name='weight')['global']
+           
+        if self.cur_prune_rate < self.args.prune_threshold:
+            if accuracy > self.eita:
+                self.cur_prune_rate = min(self.cur_prune_rate + self.args.prune_step,
+                                          self.args.prune_threshold)
+                if self.cur_prune_rate > prune_rate:
+                    l1_prune(model=self.model,
+                             amount=self.cur_prune_rate - prune_rate,
+                             name='weight',
+                             verbose=self.args.prune_verbose)
+                    self.prune_rates.append(self.cur_prune_rate)
+                else:
+                    self.prune_rates.append(prune_rate)
+                # reinitialize model with init_params
+                source_params = dict(self.init_global_model.named_parameters())
+                for name, param in self.model.named_parameters():
+                    param.data.copy_(source_params[name].data)
+
+                self.eita = self.eita_hat
+
+            else:
+                self.eita *= self.alpha
+                self.prune_rates.append(prune_rate)
         else:
-            print(f"worker {self.idx} did NOT reinitialize its parameters.")
-            
-    def train(self):
-        print(f"worker {self.idx} with labels {self._user_labels} is training for {self.args.epochs} epochs...")
-        for epoch in range(self.args.epochs):
+            if self.cur_prune_rate > prune_rate:
+                l1_prune(model=self.model,
+                         amount=self.cur_prune_rate-prune_rate,
+                         name='weight',
+                         verbose=self.args.prune_verbose)
+                self.prune_rates.append(self.cur_prune_rate)
+            else:
+                self.prune_rates.append(prune_rate)
+
+        print(f"\nTraining local model")
+        self.train(comm_round)
+
+        ticket_acc = self.eval_model(self.model)["Accuracy"][0]
+        print(f'Trained model accuracy: {ticket_acc}')
+
+        wandb.log({f"{self.idx}_cur_prune_rate": self.cur_prune_rate}) # worker's prune rate, but not necessarily the same as _percent_pruned because when < validation_threshold, no prune and use the whole model
+        # wandb.log({f"{self.idx}_eita": self.eita}) - I don't care logging it
+        wandb.log(
+            {f"{self.idx}_percent_pruned": self.prune_rates[-1]}) # model sparsity at this moment
+
+        # save last local model
+        self.save_model_weights_to_log(comm_round, self.args.epochs)
+
+        if self._is_malicious:
+            # poison the last local model
+            self.poison_model()
+            poinsoned_acc = self.eval_model(self.model)["Accuracy"][0]
+            print(f'Poisoned accuracy: {poinsoned_acc}, decreased {ticket_acc - poinsoned_acc}.')
+            # overwrite the last local model
+            self.save_model_weights_to_log(comm_round, self.args.epochs)
+            ticket_acc = poinsoned_acc
+        
+        wandb.log({f"{self.idx}_ticket_local_acc": ticket_acc, "comm_round": comm_round})
+
+    def train(self, comm_round):
+        """
+            Train NN
+        """
+        losses = []
+
+        for epoch in range(1, self.args.epochs + 1):
             if self.args.train_verbose:
                 print(
-                    f"Device={self.idx}, epoch={epoch}, comm_round:{self.blockchain.get_chain_length()+1}")
+                    f"Worker={self.idx}, epoch={epoch}")
+
             metrics = util_train(self.model,
                                  self._train_loader,
                                  self.args.optimizer,
                                  self.args.lr,
                                  self.args.dev_device,
                                  self.args.train_verbose)
-
+            losses.append(metrics['Loss'][0])
             
-    def poison_model(self):
-        for layer, module in self.model.named_children():
-            for name, weight_params in module.named_parameters():
-                if "weight" in name:
-                    noise = self.args.noise_variance * torch.randn(weight_params.size())
-                    # variance_of_noise = torch.var(noise)
-                    weight_params.add_(noise.to(self.args.dev_device))
-        print(f"Device {self.idx} has poisoned its model.")
-            
-    def create_model_sig(self):
-        # TODO - new model signature 
-        # model_sig sparsity has to meet the current pruning difficulty, and not detemrined by the worker's own model's pruned amount, as the worker's model will not be recorded in the final block, so a worker can just provide a very small model_sig in terms of dimension to increase the success of passing the model_sig check in the final block. Also this discourages a worker to prune too quickly, because then its model_sig will provide more real model weights
-        # spar(model_sig) >= (1-curr_pruining_diff)*sig_portion
-        # find all 1s in mask layer by layer
-        def populate_layer_dict():
-            layer_to_num_picked_ones = {}
-            for layer, module in self.model.named_children():
-                for name, mask in module.named_buffers():
-                    if 'mask' in name:
-                        layer_to_num_picked_ones[layer] = 0
-            return layer_to_num_picked_ones
-        
-        def get_ones_postions():
-            # total_num_ones = 0
-            layer_to_one_positions = {}
-            layer_to_num_ones = {}
-            for layer, module in self.model.named_children():
-                for name, mask in module.named_buffers():
-                    if 'mask' in name:
-                        # get all 1 positions
-                        # https://stackoverflow.com/questions/8081545/how-to-convert-list-of-tuples-to-multiple-lists
-                        one_positions = list(zip(*np.where(mask==1)))
-                        layer_to_one_positions[layer] = one_positions
-                        layer_to_num_ones[layer] = len(one_positions)
-                        # total_num_ones += len(one_positions)
-            return layer_to_one_positions, layer_to_num_ones
-        
-        # determine how many ones to pick for signature layer by layer, randomly
-        def nums_elems_to_pick_from_layers(total_num_sig_params, layer_to_num_ones, layer_to_num_picked_ones):
-            while total_num_sig_params > 0:
-                picked_layer, num_ones = random.choice(list(layer_to_num_ones.items()))
-                if num_ones == 0:
-                    continue
-                num_ones_to_pick = min(total_num_sig_params, random.randint(1, num_ones))
-                layer_to_num_picked_ones[picked_layer] += num_ones_to_pick
-                layer_to_num_ones[picked_layer] -= num_ones_to_pick
-                if layer_to_num_ones[picked_layer] == 0:
-                    del layer_to_num_ones[picked_layer]
-                total_num_sig_params -= num_ones_to_pick
-            return layer_to_num_picked_ones
-        
-        # randomly pick ones by the numbers calculated in nums_elems_to_pick_from_layers()
-        def pick_elems_positions_from_layers(layer_to_one_positions, layer_to_num_picked_ones):
-            layer_to_picked_ones_positions = {}
-            for layer, num_picks in layer_to_num_picked_ones.items():
-                layer_to_picked_ones_positions[layer] = random.sample(layer_to_one_positions[layer], num_picks)
-            return layer_to_picked_ones_positions
-        
-        def create_sig_mask_with_disturbs(layer_to_picked_ones_positions, layer_to_picked_distrubs_positions):
-            layer_to_keeped_ones_positions = {layer: set(layer_to_picked_ones_positions[layer]) - set(layer_to_picked_distrubs_positions[layer]) for layer in layer_to_picked_ones_positions}
-            # create the signature mask
-            sig_mask = populate_layer_dict()
-            for layer, module in self.model.named_children():
-                for name, mask in module.named_buffers():
-                    if 'mask' in name:
-                        sig_mask_layer = np.zeros_like(mask)
-                        for position in layer_to_keeped_ones_positions[layer]:
-                            sig_mask_layer[position] = 1
-                        for position in layer_to_picked_distrubs_positions[layer]:
-                            sig_mask_layer[position] = random.uniform(0,2)
-                    sig_mask[layer] = sig_mask_layer
-            return sig_mask
-        
-        def create_signature(sig_mask_with_disturbs):
-            layer_to_sig = {}
-            for layer, module in self.model.named_children():
-                for name, weight_params in module.named_parameters():
-                    if 'weight' in name:
-                        layer_to_sig[layer] = np.multiply(weight_params, sig_mask_with_disturbs[layer])
-            # print(sum([len(list(zip(*np.where(layer_to_sig[layer] != 0)))) for layer in layer_to_sig]))
-            return layer_to_sig
-        
-        # pick the ones for signature
-        layer_to_num_picked_ones = populate_layer_dict()
-        layer_to_one_positions, layer_to_num_ones = get_ones_postions()
-        model_params_count = get_num_total_model_params(self.model)
-        total_num_sig_params = int(model_params_count * (1 - self.blockchain.get_cur_pruning_diff()) * self.args.sig_portion)
-        layer_to_num_picked_ones = nums_elems_to_pick_from_layers(total_num_sig_params, layer_to_num_ones, layer_to_num_picked_ones)
-        layer_to_picked_ones_positions = pick_elems_positions_from_layers(layer_to_one_positions, layer_to_num_picked_ones)
-        
-        # disturb sig_threshold portion of weights
-        layer_to_num_picked_disturbs = populate_layer_dict()
-        total_num_disturbs = int(total_num_sig_params * (1 - self.args.sig_threshold))
-        layer_to_num_picked_disturbs = nums_elems_to_pick_from_layers(total_num_disturbs, layer_to_num_picked_ones, layer_to_num_picked_disturbs)
-        layer_to_picked_distrubs_positions = pick_elems_positions_from_layers(layer_to_picked_ones_positions, layer_to_num_picked_disturbs)
-        sig_mask = create_sig_mask_with_disturbs(layer_to_picked_ones_positions, layer_to_picked_distrubs_positions)
-        model_sig = create_signature(sig_mask)
-        
-        self.model_sig = model_sig     
-        get_model_sig_sparsity(self.model, model_sig)   
-        return model_sig
-    
     def make_worker_tx(self):
                 
         worker_tx = {
             'worker_idx' : self.idx,
             'rsa_pub_key': self.return_rsa_pub_key(),
             'model' : pytorch_make_prune_permanent(self.model),
-            'm_sig' : self.model_sig, # TODO
-            'm_sig_sig': self.sign_msg(self.model_sig)
+            'model_path' : self.last_local_model_path,
         }
         worker_tx['tx_sig'] = self.sign_msg(str(worker_tx))
         self._worker_tx = worker_tx
     
-    def asso_validators(self, validators):
+    def broadcast_tx(self, online_devices_list):
+        # worker broadcast tx, but only validators should accept the transaction
+        validators = [d for d in online_devices_list if d.role == "validator"]
         n_validators_to_send = int(len(validators) * self.args.v_portion)
         random.shuffle(validators)
         for validator in validators:
@@ -362,7 +327,7 @@ class Device():
                 self._associated_validators.add(validator)
                 n_validators_to_send -= 1
                 if n_validators_to_send == 0:
-                    print(f"{self.role} {self.idx} associated with validators {[v.idx for v in self._associated_validators]}")
+                    print(f"{self.role} {self.idx} has broadcasted to validators {[v.idx for v in self._associated_validators]}")
                     break
                 
     ### Validators ###
@@ -372,9 +337,10 @@ class Device():
     def receive_and_verify_worker_tx_sig(self):
         for worker in self._associated_workers:
             if self.verify_tx_sig(worker._worker_tx):
-                # TODO - check sig of model_sig
                 # if self.args.mal_vs and self._is_malicious:
                 #     continue
+                # abandoned, too easy to spot
+                print(f"Validator {self.idx} has received and verified the signature of the tx from worker {worker.idx}.")
                 self._verified_worker_txs[worker.idx] = worker._worker_tx
             else:
                 print(f"Signature of tx from worker {worker['idx']} is invalid.")
@@ -396,493 +362,110 @@ class Device():
         validator_tx['tx_sig'] = self.sign_msg(str(validator_tx)) # will be removed in final block
         return validator_tx
 
-    '''
-    def shapley_value_validation_VBFL(self, comm_round, idx_to_device):
-
-        
-        # 1. Validator one-epoch update from the latest global model and get training accuracy
-        # 2. Test worker's model on its training data
-        # 3. Compare with threshold
-
-        # 1. Validator one-epoch update from the latest global model and get training accuracy
-        temp_validator_model = deepcopy(self.model)
-        # one epoch of training
-        util_train(temp_validator_model,
-                    self._train_loader,
-                    self.args.optimizer,
-                    self.args.lr,
-                    self.args.dev_device,
-                    self.args.train_verbose)
-        # get validator's accuracy
-        self.validator_local_accuracy = test_by_data_set(temp_validator_model,
-                self._train_loader,
-                self.args.dev_device,
-                self.args.test_verbose)['Accuracy'][0]
-
-        # 2. Test worker's model on its training data
-        worker_idx_to_acc = {}
-        for worker_idx, worker_tx in self._verified_worker_txs.items():
-            worker_model = worker_tx['model']
-            worker_idx_to_acc[worker_idx] = test_by_data_set(worker_model,
-                self._train_loader,
-                self.args.dev_device,
-                self.args.test_verbose)['Accuracy'][0]
-        
-        # 3. Compare with threshold and vote
-        print("validator_local_accuracy", self.validator_local_accuracy)
-        for worker_idx, eval_acc in worker_idx_to_acc.items():
-            identity = "malicious" if idx_to_device[worker_idx]._is_malicious else "legit"
-            print("For worker", worker_idx, identity, f"{eval_acc} - {self.validator_local_accuracy} = {eval_acc - self.validator_local_accuracy}")
-            wandb.log({"comm_round": comm_round, f"v_{self.idx}_{self._user_labels}_to_w_{worker_idx}_{idx_to_device[worker_idx]._user_labels}_{identity}": eval_acc - self.validator_local_accuracy})
-    '''
-
     ''' Validation Methods '''
 
-    # helper functions
-    def return_worker_to_acc_top_to_low(self, worker_idx_to_model):
-        # Test worker's model on its training data
-        worker_idx_to_acc = {}
-        for worker_idx, worker_model in worker_idx_to_model.items():
-            worker_idx_to_acc[worker_idx] = test_by_data_set(worker_model,
-                self._train_loader,
-                self.args.dev_device,
-                self.args.test_verbose)['Accuracy'][0]
-        worker_to_acc_top_to_low = {w_idx: acc for w_idx, acc in sorted(worker_idx_to_acc.items(), key=lambda item: item[1], reverse=True)}
-        return worker_to_acc_top_to_low
+    def fedavg(
+        self,
+        iden_benigh_models,
+        *args,
+        **kwargs
+    ):
+        weight_per_worker = 1/len(iden_benigh_models)
 
-    def filter_by_acc_z_score(self, worker_to_acc, idx_to_device):
-        df = pd.DataFrame({'worker_idx': worker_to_acc.keys(), 'acc': worker_to_acc.values()})
-        # is_legit_list used to debug and choose the best z_counts
-        df['zscore'] = (df.acc - df.acc.mean())/df.acc.std()
-        is_legit_list = []
-        for iter in range(len(df)):
-            worker_idx = int(df[iter:iter+1].iloc[0]['worker_idx'])
-            is_legit_list.append(not idx_to_device[worker_idx]._is_malicious)
-        df.insert(df.shape[1], "is_legit", is_legit_list)
-        df = df.sort_values('worker_idx')
-        print(df) # debug
-        selected_models = df[(df.zscore > -self.args.z_counts) & (df.zscore < self.args.z_counts)]
-        unselected_models = df[~df.apply(tuple,1).isin(selected_models.apply(tuple,1))]
+        aggr_model = fed_avg(
+            models=iden_benigh_models,
+            weight=weight_per_worker,
+            device=self.args.dev_device
+        )
 
-        return selected_models, unselected_models
+        # if self.args.CELL:
+        #     pruned_percent = get_prune_summary(aggr_model, name='weight')['global']
+        #     # pruned by the earlier zeros in the model
+        #     l1_prune(aggr_model, amount=pruned_percent, name='weight')
 
-    def shapley_value_get_base_acc(self, models):
-        # used in shapley value based validation (validation 1 and 2)
-        base_aggr_model = fedavg(models, self.args.dev_device)
-        base_aggr_model_acc = test_by_data_set(base_aggr_model,
-                               self._train_loader,
-                               self.args.dev_device,
-                               self.args.test_verbose)['Accuracy'][0]
-        return base_aggr_model_acc
+        # if self.args.overlapping_prune:
+        #     # apply mask object to aggr_model. Otherwise won't work in lowOverlappingPrune()
+        #     l1_prune(model=aggr_model,
+        #             amount=0.00,
+        #             name='weight',
+        #             verbose=False)
+        
+        return aggr_model
 
-    def exclude_one_model_and_fedavg_rest(self, worker_idx_to_model):
-        # used in shapley value based validation (validation 1 and 2)
-        if len(worker_idx_to_model) == 1:
-            sys.exit("This shouldn't happen in exclude_one_model().")
-        excluding_one_models_list = {}
-        for idx, model in worker_idx_to_model.items():
-            tmp_models_list = copy(worker_idx_to_model)
-            del tmp_models_list[idx]
-            excluding_one_models_list[idx] = fedavg(list(tmp_models_list.values()), self.args.dev_device)
-        return excluding_one_models_list
-
-    def validate_model_sig(self):
-        # Assume workers are honest in providing their model signatures by summing up rows and columns. This attack is so easy to spot.
-        # self.validate_model_sig() worker_model_sig = worker_tx['m_sig'], and check worker_tx['m_m_sig'] by worker's rsa key, easy, skip
-        return True
-
-    def validate_model_sparsity(self):
-        worker_idx_to_model = {}
-        for worker_idx, worker_tx in self._verified_worker_txs.items():
-            worker_model = worker_tx['model']
-            # validate model spasity
-            pruned_amount = round(get_pruned_amount_by_weights(worker_model), 2)
-            prune_diff = self.blockchain.get_cur_pruning_diff()
-            if round(pruned_amount, 2) < round(prune_diff, 1):
-                # skip model below the current pruning difficulty
-                print(f"worker {worker_idx}'s prune amount {pruned_amount} is less than current blockchain's prune difficulty {prune_diff}. Model skipped.")
-                continue
-            # if self.args.mal_vs and self._is_malicious:
-                # drop legitimate model
-                # even malicious validator cannot pass the model with invalid sparsity because it'll be detected by other validators
-                # continue
-            
-            worker_idx_to_model[worker_idx] = worker_model
-        return worker_idx_to_model
-
-    def model_structure_validation(self):
-        # self.validate_model_sig()
-        worker_idx_to_model = self.validate_model_sparsity()
-        return worker_idx_to_model
 
     # base validatation_method
-    def validate_model(self, idx_to_device):
+    def validate_models(self):
 
-        # validate model signature and sparsity
-        worker_idx_to_model = self.model_structure_validation()
+        # validate model sparsity
+        # worker_idx_to_model = self.model_structure_validation()
+        worker_idx_to_model = {}
+        for worker_idx, worker_tx in self._verified_worker_txs.items():
+            worker_idx_to_model[worker_idx] = worker_tx['model_path']
+
+        # get layers
+        layers = []
+        for layer_name, param in self.init_global_model.named_parameters():
+            if 'weight' in layer_name:
+                layers.append(layer_name.split('.')[0])
+        num_layers = len(layers)
+
+        # 2 groups of models and treat the higher center group as legitimate
+        layer_to_ratios = {l:[] for l in layers} # in the order of worker
+        worker_to_points = {}
+        # worker_to_layer_to_ratios = {c: {l: [] for l in layers} for c in idx_to_last_local_model_path.keys()}
+        for worker_idx, worker_model_path in worker_idx_to_model.items():
+            layer_to_mask = calculate_overlapping_mask([self.model_path, worker_model_path], self.args.check_whole, self.args.overlapping_threshold, model_validation = True)
+            for layer, mask in layer_to_mask.items():
+                # overlapping_ratio = round((mask == 1).sum()/mask.size, 3)
+                overlapping_ratio = (mask == 1).sum()/mask.size
+                layer_to_ratios[layer].append(overlapping_ratio)
+                # worker_to_layer_to_ratios[worker_idx][layer] = overlapping_ratio
+            worker_to_points[worker_idx] = 0
+
+        # group workers based on ratio
+        kmeans = KMeans(n_clusters=2, random_state=0) 
+        for layer, ratios in layer_to_ratios.items():
             
-        if not worker_idx_to_model:
-            print(f"{self.role} {self.idx} either has not received any worker tx, or did not pass the verification of any worker tx.")
-            return
+            kmeans.fit(np.array(ratios).reshape(-1,1))
+            labels = list(kmeans.labels_)
+                   
+            center0 = kmeans.cluster_centers_[0]
+            center1 = kmeans.cluster_centers_[1]
+
+            benigh_center_group = 0
+            if center0 < center1:
+                benigh_center_group = 1
+
+            benigh_group = []
+            workers_in_order = list(worker_idx_to_model.keys())
+            for worker_iter in range(len(workers_in_order)):
+                worker_idx = workers_in_order[worker_iter]
+                if labels[worker_iter] == benigh_center_group:
+                    benigh_group.append(worker_idx)
+
+            for worker_iter in benigh_group:
+                worker_to_points[worker_iter] += 1
         
-        if len(worker_idx_to_model) == 1:
-            # vote = 0, due to lack comparing models
-            worker_idx = list(worker_idx_to_model.keys())[0]
-            self._validator_txs = [self.form_validator_tx(worker_idx)]
-            return
-        else:
-            if self.args.validation_method == 1:
-                self.shapley_value_validation(idx_to_device, worker_idx_to_model)
-            elif self.args.validation_method == 2:
-                self.filter_valuation(idx_to_device, worker_idx_to_model)
-            elif self.args.validation_method == 3:
-                self.assumed_attack_level_validation(worker_idx_to_model)
-            elif self.args.validation_method == 4:
-                self.greedy_soup_validation(worker_idx_to_model)
-
-
-    # validation_method == 1, malicious validators flip votes (but they probably do not want to do that)
-    def shapley_value_validation(self, idx_to_device, worker_idx_to_model):
-        
-        validator_txes = []
-        
-        # validate model accuracy
-        base_aggr_model_acc = self.shapley_value_get_base_acc(list(worker_idx_to_model.values()))
-
-        user_labels_counter = [] # used for debugging the validation scheme
-
-        # worker_idx_to_weighted_model = avg_individual_model(worker_idx_to_model, len(worker_idx_to_model) - 1)
-        
-        excluding_one_models_list = self.exclude_one_model_and_fedavg_rest(worker_idx_to_model)
-        identity = "malicious" if self._is_malicious else "legit"
-
-        # test each model
-        print(f"\nValidator {self.idx} {identity} with base model acc {round(base_aggr_model_acc, 2)} and labels {self._user_labels} starts validating models.")
-        
-        for worker_idx, model in excluding_one_models_list.items():
-            exclu_aggr_model_acc = test_by_data_set(model,
-                            self._train_loader,
-                            self.args.dev_device,
-                            self.args.test_verbose)['Accuracy'][0]
-            
-            acc_difference = base_aggr_model_acc - exclu_aggr_model_acc
-
-            malicious_worker = idx_to_device[worker_idx]._is_malicious
-            judgement = "right"
-
-            if acc_difference > 0:
-                model_vote = 1
-                inc_or_dec = "decreased"
-                if malicious_worker:
-                    judgement = "WRONG"
-            elif acc_difference == 0:
-                # added =0 because if n_class so small, in first few rounds the diff could = 0, so good or bad is undecided
-                model_vote = 0
-                inc_or_dec = "CAN NOT DECIDE"
-                if malicious_worker:
-                    judgement = "WRONG"
-            else:
-                model_vote = -1
-                inc_or_dec = "increased"
-                if not malicious_worker:
-                    judgement = "WRONG"
-
-            print(f"Excluding worker {worker_idx}'s ({idx_to_device[worker_idx]._user_labels}) model, the accuracy {inc_or_dec} by {round(abs(acc_difference), 2)} - voted {model_vote} - Judgement {judgement}.")
-
-            # turn off validation, pass all models, and mal_vs will be turned off
-            if self.args.pass_all_models:
-                self.args.mal_vs = 0
-                model_vote = 1
-
-            # if malicious validator, disturb vote
-            if self.args.mal_vs and self._is_malicious:
-                model_vote = 1 if model_vote == 0 else model_vote * -1
-                # acc_difference = acc_difference * -1 # negative rewards do not make sense
-
-            user_labels_counter.extend(list(idx_to_device[worker_idx]._user_labels))
-            
-            # form validator tx for this worker tx (and model)
-            validator_tx = self.form_validator_tx(worker_idx, model_vote=model_vote, shapley_diff_rewards=acc_difference)
-            validator_txes.append(validator_tx)
-
-        # debug the validation mechanism
-        if self.args.debug_validation:
-            user_labels_counter_dict = dict(collections.Counter(user_labels_counter))
-            print("Worker labels total count", {k: v for k, v in sorted(user_labels_counter_dict.items(), key=lambda item: item[1], reverse=True)})
-            print("Unique labels", len(user_labels_counter_dict))
-        
-        self._validator_txs = validator_txes
-
-    # validation_method == 2, malicious validators flip votes (but they probably do not want to do that)
-    def filter_valuation(self, idx_to_device, worker_idx_to_model):
-
-        def prepare_pos_models(model_df):
-            # return the models to be used mapped to its accuracy
-            model_to_indi_acc = {}
-            selected_worker_idx_to_model = {}
-            for iter in range(min(top_models_count, len(model_df))):
-                worker_idx = int(model_df[iter:iter+1].iloc[0]['worker_idx'])
-                acc = model_df[iter:iter+1].iloc[0]['acc']
-                model_to_indi_acc[worker_idx_to_model[worker_idx]] = acc
-                selected_worker_idx_to_model[worker_idx] = worker_idx_to_model[worker_idx]
-            return model_to_indi_acc, selected_worker_idx_to_model
-        
-        def prepare_neg_models(model_df):
-            worker_to_indi_acc = {}
-            for iter in range(min(top_models_count, len(model_df))):
-                worker_idx = int(model_df[iter:iter+1].iloc[0]['worker_idx'])
-                acc = model_df[iter:iter+1].iloc[0]['acc']
-                worker_to_indi_acc[worker_idx] = acc
-            return worker_to_indi_acc
-
-             
-        validator_txes = []
-
-        worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
-
-        # for models with accuracy 0, give NEG_VOTE
-        # TODO - mal validator
-        temp_worker_to_acc = copy(worker_to_acc_top_to_low)
-        for worker_idx, acc in  temp_worker_to_acc.items():
-            if acc == 0:
-                validator_tx = self.form_validator_tx(worker_idx, model_vote=self.args.NEG_VOTE, indi_acc_rewards=acc)
-                validator_txes.append(validator_tx)
-                worker_to_acc_top_to_low.pop(worker_idx)
-                
-        df_selected_models, df_unselected_models = self.filter_by_acc_z_score(worker_to_acc_top_to_low, idx_to_device)
-
-        # further process df_selected_models by top n models
-        top_models_count = round(len(worker_idx_to_model) * self.args.single_val_agg_models_portion)
-        df_selected_models = df_selected_models.sort_values('acc', ascending=False)
-        df_unselected_models = pd.concat([df_selected_models[top_models_count:], df_unselected_models])
-        df_selected_models = df_selected_models[:top_models_count]
-
-        if self.args.mal_vs and self._is_malicious:
-            # use the unselected_models
-            v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_pos_models(df_unselected_models)
-            v0_worker_to_indi_acc = prepare_neg_models(df_selected_models)
-        else:
-            v1_model_to_indi_acc, v1_selected_worker_idx_to_model = prepare_pos_models(df_selected_models)
-            v0_worker_to_indi_acc = prepare_neg_models(df_unselected_models)
-
-        # for vote=1 models, calcuate shaply value accuracy difference for rewards_method_1
-        base_aggr_model_acc = self.shapley_value_get_base_acc(list(v1_model_to_indi_acc.keys()))
-        excluding_one_models_list = self.exclude_one_model_and_fedavg_rest(v1_selected_worker_idx_to_model)
-        
-        for worker_idx, model in excluding_one_models_list.items():
-            exclu_aggr_model_acc = test_by_data_set(model,
-                            self._train_loader,
-                            self.args.dev_device,
-                            self.args.test_verbose)['Accuracy'][0]
-            
-            acc_difference = base_aggr_model_acc - exclu_aggr_model_acc
-            validator_tx = self.form_validator_tx(worker_idx, model_vote=self.args.POS_VOTE, shapley_diff_rewards=acc_difference, indi_acc_rewards=v1_model_to_indi_acc[worker_idx_to_model[worker_idx]])
-            validator_txes.append(validator_tx)
-
-        # for filtered out models, shapley_diff_rewards=0
-        for worker_idx, acc in v0_worker_to_indi_acc.items():
-            validator_tx = self.form_validator_tx(worker_idx, model_vote=self.args.NEG_VOTE, indi_acc_rewards=acc)
-            validator_txes.append(validator_tx)
-
-        self._validator_txs = validator_txes
-            
-
-    # validation_method == 3, malicious validators flip votes and reverse rewards (but they probably do not want to do that)
-    def assumed_attack_level_validation(self, worker_idx_to_model):
-
-        pos_vote_models_count = round(len(worker_idx_to_model) * self.args.single_val_agg_models_portion)
-        
-        worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
-        worker_ranked_acc_top_to_low = list(worker_to_acc_top_to_low.keys())
-        worker_ranked_acc_low_to_top = worker_ranked_acc_top_to_low[::-1]
-
-        validator_txes = []
-
-        for worker_iter in range(len(worker_ranked_acc_top_to_low)):
-            worker_idx = worker_ranked_acc_top_to_low[worker_iter]
-            reversed_worker_idx = worker_ranked_acc_low_to_top[worker_iter]
-            if worker_iter < pos_vote_models_count:
-                # positive vote
-                if self.args.mal_vs and self._is_malicious:
-                    vote = self.args.NEG_VOTE
-                    indi_acc_rewards=worker_to_acc_top_to_low[reversed_worker_idx]
-                else:
-                    vote = self.args.POS_VOTE
-                    indi_acc_rewards=worker_to_acc_top_to_low[worker_idx]
-            else:
-                # negative vote
-                if self.args.mal_vs and self._is_malicious:
-                    vote = self.args.POS_VOTE
-                    indi_acc_rewards=worker_to_acc_top_to_low[reversed_worker_idx]
-                else:
-                    vote = self.args.NEG_VOTE
-                    indi_acc_rewards=worker_to_acc_top_to_low[worker_idx]
-            validator_tx = self.form_validator_tx(worker_idx, model_vote = vote, indi_acc_rewards=indi_acc_rewards)
-            validator_txes.append(validator_tx)
-        self._validator_txs = validator_txes
-
-    # validation_method == 4, malicious validators flip votes and assign bad models top rewards (but they probably do not want to do that)
-    def greedy_soup_validation(self, worker_idx_to_model):
-
-        worker_to_acc_top_to_low = self.return_worker_to_acc_top_to_low(worker_idx_to_model)
-
-        validator_txes = []
-        worker_idx_to_vote = {}
-        worker_idx_to_diff_acc = {}
-
-        ingredients = []
-        last_acc = 0
-
-        for worker_idx in worker_to_acc_top_to_low.keys():
-            model = worker_idx_to_model[worker_idx]
-            new_aggr_models = copy(ingredients)
-            new_aggr_models.append(model)
-            
-            new_aggr_model = fedavg(new_aggr_models, self.args.dev_device)
-            to_compare_acc = test_by_data_set(new_aggr_model,
-                                self._train_loader,
-                                self.args.dev_device,
-                                self.args.test_verbose)['Accuracy'][0]
-            
-            if to_compare_acc >= last_acc:
-                ingredients.append(model)
-                worker_idx_to_diff_acc[worker_idx] = to_compare_acc - last_acc
-                last_acc = to_compare_acc
-                worker_idx_to_vote[worker_idx] = self.args.POS_VOTE
-            else:
-                worker_idx_to_vote[worker_idx] = self.args.NEG_VOTE
-                worker_idx_to_diff_acc[worker_idx] = to_compare_acc - last_acc
-
-        if self.args.mal_vs and self._is_malicious:
-            votes_from_0_to_1 = {w: v for w, v in sorted(worker_idx_to_vote.items(), key=lambda item: item[1])}
-            worker_iter = 0
-            for worker_idx, vote in votes_from_0_to_1.items():
-                vote = 1 if vote == 0 else 0
-                worker_idx_to_diff_acc[worker_idx] *= -1
-                validator_tx = self.form_validator_tx(worker_idx, model_vote = vote, shapley_diff_rewards= worker_idx_to_diff_acc[worker_idx],indi_acc_rewards=worker_to_acc_top_to_low.values()[worker_iter])
-                validator_txes.append(validator_tx)
-                worker_iter += 1
-        else:
-            for worker_idx, vote in worker_idx_to_vote.items():
-                validator_tx = self.form_validator_tx(worker_idx, model_vote = vote, shapley_diff_rewards= worker_idx_to_diff_acc[worker_idx],indi_acc_rewards=worker_to_acc_top_to_low[worker_idx])
-                validator_txes.append(validator_tx)
-        self._validator_txs = validator_txes
+        self._iden_benigh_workers = [worker_idx for worker_idx in worker_to_points if worker_to_points[worker_idx] > num_layers * 0.5] # was >=
     
-    ''' Validation Methods '''
+    # def validator_no_exchange_tx(self):
+    #     self._received_validator_txs = {}
+    #     for tx in self._validator_txs:
+    #         self._received_validator_txs[tx['2. worker_idx']] = [tx]
 
-    def exchange_and_verify_validator_tx(self, validators):
-        # key: worker_idx, value: transactions from its associated validators
-        self._received_validator_txs = {}
-        # exchange among validators
-        for validator in validators:
-            # if validator == self:
-            #     continue - it's okay to have itself
-            for tx in validator._validator_txs:
-                tx = deepcopy(tx)
-                if not self.verify_tx_sig(tx):
-                    continue
-                    # TODO - record to black list
-                # if self.args.mal_vs and self._is_malicious:
-                #     # randomly drop tx
-                #     if random.random() < 0.5:
-                #         continue
-                if tx['2. worker_idx'] in self._received_validator_txs:
-                    self._received_validator_txs[tx['2. worker_idx']].append(tx)
-                else:
-                    self._received_validator_txs[tx['2. worker_idx']] = [tx]
-
-    def validator_no_exchange_tx(self):
-        self._received_validator_txs = {}
-        for tx in self._validator_txs:
-            self._received_validator_txs[tx['2. worker_idx']] = [tx]
-
-    def produce_global_model(self):
-        # TODO - cross check model sparsity from other validators' transactions	
-        # TODO - change _received_validator_txs to _verified_validator_txs
-        final_models_to_fedavg = []
-        used_worker_txes = {} # worker_idx to its validator tx, used txes in block, verify participating validators and worker's model_sig
-        dup_used_worker_txes = {} # identify participating validators and reward info, only verify participating validators
-        unused_worker_txes = {} # unused txes in block, verify participating validators and model_sig
-
-        # sum up model votes
-        worker_to_votes = {}
-        pos_model_votes = 0 # for voting_style == 2
-        for worker_idx, corresponding_validators_txes in self._received_validator_txs.items():
-            model_votes = sum([validator_tx['7. validator_vote'] for validator_tx in corresponding_validators_txes])
-            pos_model_votes += 1 if model_votes >= 0 else 0
-            worker_to_votes[worker_idx] = model_votes
-            # participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes])) - do in block process
+    def produce_global_model_and_reward(self):
         
-        # sort votes by decreasing order, and 
-        workers_votes_high_to_low = [w_idx for w_idx, votes in sorted(worker_to_votes.items(), key=lambda item: item[1], reverse=True)]
+        # select local models from the identified benigh workers for FedAvg
+        iden_benigh_models = []
+        for iden_benigh_worker in self._iden_benigh_workers:
+            iden_benigh_models.append(self._verified_worker_txs[iden_benigh_worker]['model'])
+            # reward the identified benigh workers
+            self._worker_to_reward[iden_benigh_worker] = self.args.reward
 
-        #determine top voted models
-        if self.args.voting_style == 1:
-            # calculate how many models to choose by # of unique workers times the final_agg_models_portion
-            to_use_models_count = round(len(self._received_validator_txs) * self.args.final_agg_models_portion)
-        elif self.args.voting_style == 2:
-            to_use_models_count = pos_model_votes
-            
-
-        # choose models for final aggregation
-        chosen_workers = workers_votes_high_to_low[:to_use_models_count]
-        for worker_idx in chosen_workers:
-            corresponding_validators_txes = self._received_validator_txs[worker_idx]
-            # worker_shap_diff_rewards = sum([validator_tx['8. shapley_diff_rewards'] for validator_tx in corresponding_validators_txes])
-            # worker_indi_acc_rewards = sum([validator_tx['9. indi_acc_rewards'] for validator_tx in corresponding_validators_txes]) - do those in block processing
-            if self.idx in set([validator_tx['1. validator_idx'] for validator_tx in corresponding_validators_txes]):
-                for validator_tx in corresponding_validators_txes:
-                    if self.idx == validator_tx['1. validator_idx']:
-                        # if this validator has this worker's transaction, it prefers its own transaction
-                        chosen_tx = validator_tx
-                        break
-            else:
-                # random.choice is necessary because in this design one worker can send different txs to different validators. may change to use stake_book to determine which validator's tx to pick
-                chosen_tx = random.choice(corresponding_validators_txes)
-            final_models_to_fedavg.append(chosen_tx['3. worker_model'])
-            used_worker_txes[worker_idx] = chosen_tx
-            # record other unused transactions to reward other participating validators
-            # validators do not check if workers send different txes
-            corresponding_validators_txes.remove(chosen_tx)
-            dup_used_worker_txes[worker_idx] = corresponding_validators_txes
-
-        # for unused transactions, also record them to identify global participating validators
-        unchosen_workers = workers_votes_high_to_low[to_use_models_count:]
-
-        for worker_idx in unchosen_workers:
-            unused_worker_txes[worker_idx] = self._received_validator_txs[worker_idx]
+        # produce global model
+        self._final_ticket_model = self.fedavg(iden_benigh_models)
 
 
-        if final_models_to_fedavg:
-            self._final_ticket_model = fedavg(final_models_to_fedavg, self.args.dev_device)
-        else:
-            # no local models have passed the validation, use the latest global model
-            # take caution of shallow copy
-            self._final_ticket_model = self.model
-        # print(self.args.epochs, get_pruned_amount_by_weights(self._final_ticket_model))
-        # print()
-        self._used_worker_txes = used_worker_txes
-        self._dup_used_worker_txes = dup_used_worker_txes
-        self._unused_worker_txes = unused_worker_txes
-        # no way to ensure that the validator chooses the model and model_sig within the same tx, but if a worker doesn't send different models, there would be no issue. Validator also is responsible to check for the model_sig. If invalid, should drop before the block. Once model_sig found invalid in the block, the whole block becomes invalid and no one will be rewarded, so validators are not incentived to select a model_sig from a different validator_tx that has the same model 
-
-
-    def remove_model_and_vtx_sig(self):
-        
-        def remove_from_single_tx(v_tx):
-            del v_tx['3. worker_model']
-            del v_tx['tx_sig']
-        
-        for validator_tx in self._used_worker_txes.values():
-            remove_from_single_tx(validator_tx)
-
-        for validator_txs in self._dup_used_worker_txes.values():
-            for validator_tx in validator_txs:
-                remove_from_single_tx(validator_tx)
-
-        for validator_txs in self._unused_worker_txes.values():
-            for validator_tx in validator_txs:
-                remove_from_single_tx(validator_tx)
 
     def check_validation_performance(self, block, idx_to_device, comm_round):
         incorrect_pos = 0
@@ -915,10 +498,7 @@ class Device():
       
         last_block_hash = self.blockchain.get_last_block_hash()
 
-        # remove model and validator signature from validator txs
-        self.remove_model_and_vtx_sig()
-
-        block = Block(last_block_hash, self._final_ticket_model, self._used_worker_txes, self._dup_used_worker_txes, self._unused_worker_txes, self.idx, self.return_rsa_pub_key())
+        block = Block(last_block_hash, self._final_ticket_model, self._worker_to_reward, self.idx, self.return_rsa_pub_key())
         sign_block(block)
 
         self.produced_block = block
@@ -1007,26 +587,19 @@ class Device():
         # 2. check last block hash match
         if block.previous_block_hash != last_block.compute_hash():
             return False
-        # 3. check POLL
-        if not self.proof_of_workery_learning(block):
-            return False
         # block checked
         return True
 
     def check_block_when_appending(self, winning_block):
-        # 1. check last block hash match
+        # check last block hash match
         if not self.check_last_block_hash_match(winning_block):
             print(f"{self.role} {self.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain next round.")
             self._resync_to = winning_block.produced_by
             return False
-        # 2. check POLL
-        if not self.proof_of_workery_learning(winning_block):
-            print("POLL check failed.")
-            return False
         # block checked
         return True
 
-    def proof_of_workery_learning(self, block):
+    def proof_of_lottery_learning(self, block):
         ''' TODO
         1. Check global sparsity meets pruning difficulty
         2. Check model signature
@@ -1041,62 +614,21 @@ class Device():
         return True
 
         
-    def append_and_process_block(self, winning_block):
+    def append_and_process_block(self, winning_block, comm_round):
 
         self.blockchain.chain.append(copy(winning_block))
         
         block = self.blockchain.get_last_block()
-        to_reward_workers = list(block.used_worker_txes.keys())
-        
-        # for unused (duplicated) transactions, reverify participating validators
-        pass
-        
-        # get participating validators
-                
-        # update stake info
-        # workers
-        if self.args.reward_method == 1:
-            reward_type = '8. shapley_diff_rewards' 
-        elif self.args.reward_method == 2:
-            reward_type = '9. indi_acc_rewards'
-        this_round_worker_rewards = []
-        for to_reward_worker in to_reward_workers:
-            reward = block.used_worker_txes[to_reward_worker][reward_type]    
-            reward += sum([validator_tx[reward_type] for validator_tx in block.dup_used_worker_txes[to_reward_worker]])
-            this_round_worker_rewards.append(reward)
-        
-        # validator
-        winning_validator = block.produced_by
-        participating_validators = set([validator_tx['1. validator_idx'] for validator_tx in list(block.used_worker_txes.values())])
-        for worker_idx, corresponding_txes in list(block.dup_used_worker_txes.items()) + list(block.unused_worker_txes.items()):
-            participating_validators = participating_validators.union(set([validator_tx['1. validator_idx'] for validator_tx in corresponding_txes]))
-        
-        this_round_worker_rewards.sort(reverse=True)
-        if len(this_round_worker_rewards) == 0:
-            winning_rewards = 0
-            participating_rewards = 0
-        elif len(this_round_worker_rewards) == 1:
-            winning_rewards = this_round_worker_rewards[0]
-            participating_rewards = this_round_worker_rewards[0]
-        elif len(this_round_worker_rewards) == 2:
-            winning_rewards = this_round_worker_rewards[1]
-            participating_rewards = this_round_worker_rewards[1]
-        else:
-            winning_rewards = this_round_worker_rewards[1]
-            this_round_worker_rewards.remove(winning_rewards)
-            this_round_worker_rewards.pop(0)
-            participating_rewards = mean(this_round_worker_rewards)
 
-        for validator in participating_validators:
-            if validator == winning_validator:
-                self.stake_book[validator] += winning_rewards
-            else:
-                self.stake_book[validator] += participating_rewards
+        for worker, reward in block.worker_to_reward.items():
+            self.stake_book[worker] += reward
         
         # used to record if a block is produced by a malicious device
         self.has_appended_block = True
         # update global ticket model
         self.model = deepcopy(block.global_ticket_model)
+        # save global ticket model weights and update path
+        self.save_model_weights_to_log(comm_round, 0, global_model=True)
         
     def test_indi_accuracy(self, comm_round):
         indi_acc = test_by_data_set(self.model,
@@ -1120,3 +652,13 @@ class Device():
         wandb.log({"comm_round": comm_round, "global_acc": round(global_acc, 2)})
 
         return global_acc
+
+    def eval_model(self, model):
+        """
+            Eval self.model
+        """
+        eval_score = test_by_data_set(model,
+                               self._test_loader,
+                               self.args.dev_device,
+                               self.args.test_verbose)
+        return eval_score

@@ -3,12 +3,10 @@ import json
 from hashlib import sha256
 
 class Block:
-    def __init__(self, previous_block_hash, global_ticket_model, used_worker_txes, dup_used_worker_txes, unused_worker_txes, produced_by, validator_rsa_pub_key):
+    def __init__(self, previous_block_hash, global_ticket_model, worker_to_reward, produced_by, validator_rsa_pub_key):
         self.previous_block_hash = previous_block_hash
         self.global_ticket_model = global_ticket_model
-        self.used_worker_txes = used_worker_txes
-        self.dup_used_worker_txes = dup_used_worker_txes
-        self.unused_worker_txes = unused_worker_txes
+        self.worker_to_reward = worker_to_reward
         # validator specific
         self.produced_by = produced_by
         self.validator_rsa_pub_key = validator_rsa_pub_key
