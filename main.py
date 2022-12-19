@@ -191,7 +191,8 @@ def main():
     for i in range(args.n_devices):
         is_malicious = True if args.n_devices - i <= n_malicious else False
         device = Device(i + 1, is_malicious, args, train_loaders[i], test_loaders[i], user_labels[i], global_test_loader, init_global_model, init_global_model_path)
-        print(f"Assigned device {i + 1} malicious.")
+        if is_malicious:
+            print(f"Assigned device {i + 1} malicious.")
         idx_to_device[i + 1] = device
     
     devices_list = list(idx_to_device.values())
