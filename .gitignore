@@ -1,6 +1,8 @@
 __pycache__/
 data/**
-wandb/*
+wandb/**
+POLL_BLCK/**
+logs/**
 *.pyc
 .vscode
 .DS_Store
