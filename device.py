@@ -395,7 +395,7 @@ class Device():
 
 
     # base validatation_method
-    def validate_models(self):
+    def validate_models(self, comm_round, idx_to_device):
 
         # validate model sparsity
         # worker_idx_to_model = self.model_structure_validation()
@@ -448,6 +448,20 @@ class Device():
                 worker_to_points[worker_iter] += 1
         
         self._iden_benigh_workers = [worker_idx for worker_idx in worker_to_points if worker_to_points[worker_idx] > num_layers * 0.5] # was >=
+
+        # evaluate validation
+        false_positive = 0
+        for benigh_client_idx in self._iden_benigh_workers:
+            if idx_to_device[benigh_client_idx]._is_malicious:
+                false_positive += 1
+        try:
+            correct_rate = 1 - false_positive/self.args.n_malicious
+        except ZeroDivisionError:
+            correct_rate = 1
+        print(f"Validator {self.idx} selects {self._iden_benigh_workers} as benigh workers.")
+        print(f"{false_positive} in {self.args.n_malicious} identified wrong. Correct rate - {correct_rate:.2%}")
+        wandb.log({f"validator_{self.idx}_correct_rate": correct_rate, "comm_round": comm_round})
+
     
     # def validator_no_exchange_tx(self):
     #     self._received_validator_txs = {}

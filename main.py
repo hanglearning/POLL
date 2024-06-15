@@ -277,7 +277,7 @@ def main():
             # verify tx signature
             validator.receive_and_verify_worker_tx_sig()
             # validate model based on top-overlapping ratio
-            validator.validate_models()
+            validator.validate_models(comm_round, idx_to_device)
         
         ### validators perform FedAvg and produce blocks ###
         for validator_iter in range(len(online_validators)):

@@ -169,9 +169,9 @@ def copy_model(model: nn.Module, device='cuda:0'):
 
 
 metrics = MetricCollection([
-    Accuracy(),
-    Precision(),
-    Recall(),
+    Accuracy('MULTICLASS', num_classes = 10),
+    Precision('MULTICLASS', num_classes = 10),
+    Recall('MULTICLASS', num_classes = 10),
     # F1(), torchmetrics.F1 cannot be imported
 ])
 
