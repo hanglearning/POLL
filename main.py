@@ -6,11 +6,10 @@
 1. log latest model accuracy in test_indi_accuracy()
 2. log validation mechanism performance in check_validation_performance()
 3. log forking event at the end of main.py
-4. log stake book at the end of main.py
+4. log useful_work book at the end of main.py
 5. log when a malicious block has been added by any device in the network 
 '''
 import os
-# from this import d
 import torch
 import argparse
 import pickle
@@ -62,7 +61,7 @@ parser.add_argument('--wandb_username', type=str, default=None)
 parser.add_argument('--wandb_project', type=str, default=None)
 parser.add_argument('--run_note', type=str, default=None)
 parser.add_argument('--debug_validation', type=int, default=1, help='show validation process detail')
-parser.add_argument('--log_model_acc_freq', type=int, default=1, help='frequency of logging global model individual and global test accuracy')
+parser.add_argument('--log_model_acc_freq', type=int, default=1, help="frequency of logging global model's individual and global test accuracy")
 parser.add_argument('--log_dir', type=str, default="./logs")
 
 
@@ -89,7 +88,6 @@ parser.add_argument('--eita', type=float, default=0.5,
 parser.add_argument('--alpha', type=float, default=0.5,
                     help="accuracy reduction factor")
 
-parser.add_argument('--mal_vs', type=int, default=0, help="malicious validators will disturb votes (or later add randomly drop legitimate worker transactions)")
 parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
 parser.add_argument('--rate_unbalance', type=float, default=1.0, help='unbalance between labels')
 parser.add_argument('--dataloader_workers', type=int, default=0, help='num of pytorch dataloader workers')
@@ -99,23 +97,24 @@ parser.add_argument('--prune_threshold', type=float, default=0.8)
 
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
 
-parser.add_argument('--oppo_v', type=int, default=1, help="opportunistic validator - simulate that when a device sees its stake top 1, choose its role as validator")
+# parser.add_argument('--oppo_v', type=int, default=1, help="opportunistic validator - simulate that when a device sees its useful_work top 1, choose its role as validator")
 
-parser.add_argument('--overlapping_threshold', type=float, default=0.2, help='check this percent of top overlapping ragion')
-parser.add_argument('--check_whole', type=int, default=1, help='check the whole network for overlapping_threshold or unpruned region. checking the whole network makes pruning faster')
-parser.add_argument('--reward', type=int, default=10, help='basic reward for identified benigh workers')
+# parser.add_argument('--overlapping_threshold', type=float, default=0.2, help='check this percent of top overlapping ragion')
+# parser.add_argument('--check_whole', type=int, default=1, help='check the whole network for overlapping_threshold or unpruned region. checking the whole network makes pruning faster')
+# parser.add_argument('--reward', type=int, default=10, help='basic reward for identified benigh workers')
 
-####################### blockchained pruning setting #######################
-parser.add_argument('--target_pruned_perc', type=float, default=0.8)
-parser.add_argument('--prune_step', type=float, default=0.2, help='increment of difficulty every diff_freq')
+####################### pruning setting #######################
+parser.add_argument('--target_pruned_sparsity', type=float, default=0.2)
+# parser.add_argument('--prune_step', type=float, default=0.2, help='increment of difficulty every diff_freq')
+parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model parameters before training")
+parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
+
 
 ####################### blockchain setting #######################
 parser.add_argument('--n_devices', type=int, default=20)
 
 parser.add_argument('--n_workers', type=str, default='12', 
                     help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of workers and validators are random from round to round')
-parser.add_argument('--v_portion', type=float, default=1,
-                    help='this determins how many validators should one worker send txs to. e.g., there are 6 validators in the network and v_portion = 0.5, then one worker will send tx to 6*0.5=3 validators')
 parser.add_argument('--check_signature', type=int, default=0, 
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
 parser.add_argument('--network_stability', type=float, default=1.0, 
@@ -146,7 +145,7 @@ def main():
     print(f"Using device {args.dev_device}")
 
     exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
-    log_root_name = f"malvs_{args.mal_vs}_seed_{args.seed}_{exe_date_time}"
+    log_root_name = f"seed_{args.seed}_{exe_date_time}"
 
     try:
         # on Google Drive     
@@ -160,7 +159,8 @@ def main():
 
     ######## setup wandb ########
     wandb.login()
-    wandb.init(project=args.wandb_project, entity=args.wandb_username)
+    # wandb.init(project=args.wandb_project, entity=args.wandb_username)
+    wandb.init(mode="disabled")
     wandb.run.name = log_root_name
     wandb.config.update(args)
     
@@ -214,20 +214,20 @@ def main():
                     
         random.shuffle(devices_list)
         # winning validator cannot be a validator in the next round
-        # 1. May result in stake monopoly
-        # 2. since chain resyncing chooses the highest stakeholding validator, if the winning validator is compromised, the attacker controls the whole chain
+        # 1. May result in useful_work monopoly
+        # 2. since chain resyncing chooses the highest useful_workholding validator, if the winning validator is compromised, the attacker controls the whole chain
         online_workers = []
         online_validators = []
         role_assign_list = copy(devices_list)
         
-        # assign devices with top stake to opportunistic validators
-        if args.oppo_v and comm_round != 1:
-            for device in role_assign_list:
-                top_stake_device_idx = [idx for idx, stake in sorted(device.stake_book.items(), key=lambda item: item[1])][0]
-                if device.idx == top_stake_device_idx and device.is_online():
-                    online_validators.append(device)
-            for oppo_validator in online_validators:
-                role_assign_list.remove(oppo_validator)
+        # # assign devices with top useful_work to opportunistic validators
+        # if args.oppo_v and comm_round != 1:
+        #     for device in role_assign_list:
+        #         top_useful_work_device_idx = [idx for idx, useful_work in sorted(device.useful_work_book.items(), key=lambda item: item[1])][0]
+        #         if device.idx == top_useful_work_device_idx and device.is_online():
+        #             online_validators.append(device)
+        #     for oppo_validator in online_validators:
+        #         role_assign_list.remove(oppo_validator)
 
         for device_iter in range(len(role_assign_list)):
             if device_iter < n_workers:
@@ -241,7 +241,7 @@ def main():
         
         online_devices_list = online_workers + online_validators
         
-        ''' reinit params '''
+        ''' reset params '''
         for device in online_devices_list:
             device._received_blocks = []
             device.has_appended_block = False
@@ -252,7 +252,7 @@ def main():
             device._final_ticket_model = None
             device.produced_block = None
             device._iden_benigh_workers = None
-            device._worker_to_reward = {}
+            device._device_to_useful_work = {}
             
         ''' device starts Fed-POLL '''
         ### worker starts learning and pruning ###
@@ -261,8 +261,10 @@ def main():
             # resync chain
             if worker.resync_chain(comm_round, idx_to_device, online_devices_list, online_validators):
                 worker.post_resync()
-            # perform CELL ticket learning
-            worker.ticket_learning(comm_round)
+            # perform training
+            worker.ticket_learning_normal(comm_round)
+            # perform pruning
+            worker.prune_model(comm_round)
             # make tx
             worker.make_worker_tx()
             # broadcast tx to the network (of validators)
@@ -326,11 +328,11 @@ def main():
             forking = 1
         wandb.log({"comm_round": comm_round, "forking_event": forking})
 
-        ### record stake book ###
+        ### record useful_work book ###
         for device in devices_list:
             to_log = {}
             to_log["comm_round"] = comm_round
-            to_log[f"{device.idx}_stake_book"] = device.stake_book
+            to_log[f"{device.idx}_useful_work_book"] = device.useful_work_book
             wandb.log(to_log)
 
         ### record when malicious validator produced a block in network ###

@@ -27,7 +27,7 @@ from Block import Block
 from Blockchain import Blockchain
 import random
 import string
-import collections 
+from collections import deque
 from statistics import mean
 
 # used for signature embedding
@@ -49,13 +49,12 @@ class Device():
         self.idx = idx
         self.args = args
         # ticket learning variables
-        self._reinit = False
         self._train_loader = train_loader
         self._test_loader = test_loader
         self._user_labels = user_labels
         self.global_test_loader = global_test_loader
-        self.init_global_model = copy_model(init_global_model, args.dev_device)
-        self.model = copy_model(init_global_model, args.dev_device)
+        self.init_global_model = copy_model_remove_mask(init_global_model, args.dev_device)
+        self.model = copy_model_remove_mask(init_global_model, args.dev_device)
         self.model_path = init_global_model_path
         # blockchain variables
         self.role = None
@@ -63,33 +62,31 @@ class Device():
         self.has_appended_block = False
         # self.device_dict = None
         self.peers = None
-        self.stake_book = None
+        self.useful_work_book = None
         self.blockchain = Blockchain()
         self._received_blocks = []
-        self._black_list = {}
-        self._resync_to = None
-        # for workers
-        self._worker_tx = None
-        self._associated_validators = set()
+        self._resync_to = None # record the last round's picked winning validator to resync chain
         # CELL
         self.cur_prune_rate = 0.00
         self.eita_hat = self.args.eita
         self.eita = self.eita_hat
         self.alpha = self.args.alpha
         self.prune_rates = []
+        # for workers
+        self._worker_tx = None
+        self._associated_validators = set()
         # for validators
-        self._associated_workers = set()
+        self._associated_workers = set() # ideally, all workers should be associated with a validator
+        self._worker_txs = []
+        self._verified_worker_txs = {} # models used in final ticket model
+        self._verified_worker_txs = {} # models NOT used in final ticket model
         self._validator_txs = []
-        self._verified_worker_txs = {}
         self._received_validator_txs = {} # worker_id_to_corresponding_validator_txes
         self._verified_validator_txs = set()
         self._final_ticket_model = None
-        self._used_worker_txes = {} # models used in final ticket model
-        self._unused_worker_txes = {} # models NOT used in final ticket model
-        self._dup_used_worker_txes = {}
         self.produced_block = None
         self._iden_benigh_workers = None
-        self._worker_to_reward = {}
+        self._device_to_useful_work = {}
         # init key pair
         self.modulus = None
         self.private_key = None
@@ -106,7 +103,7 @@ class Device():
         # self.device_dict = idx_to_device
         self.peers = set(idx_to_device.values())
         self.peers.remove(self)
-        self.stake_book = {key: 0 for key in idx_to_device.keys()}
+        self.useful_work_book = {key: 0 for key in idx_to_device.keys()}
   
     def is_online(self):
         return random.random() <= self.args.network_stability
@@ -121,15 +118,15 @@ class Device():
                 # update chain
                 self.blockchain.replace_chain(resync_to_device.blockchain.chain)
                 print(f"\n{self.role} {self.idx}'s chain is resynced from last round's picked winning validator {self._resync_to}.")
-                # update stake_book
-                self.stake_book = resync_to_device.stake_book
+                # update useful_work_book
+                self.useful_work_book = resync_to_device.useful_work_book
                 self._resync_to = None
                 return True                
         online_devices_list = copy(online_devices_list)
-        if self.stake_book:
-            # resync chain from online validators having the highest recorded stake
-            self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
-            for device_idx, stake in self.stake_book.items():
+        if self.useful_work_book:
+            # resync chain from online validators having the highest recorded useful_work
+            self.useful_work_book = {validator: useful_work for validator, useful_work in sorted(self.useful_work_book.items(), key=lambda x: x[1], reverse=True)}
+            for device_idx, useful_work in self.useful_work_book.items():
                 device = idx_to_device[device_idx]
                 if device.role != "validator":
                     continue
@@ -144,8 +141,8 @@ class Device():
                         # update chain
                         self.blockchain.replace_chain(device.blockchain.chain)
                         print(f"\n{self.role} {self.idx}'s chain is resynced from {device.idx}, who picked {idx_to_device[device.idx].blockchain.get_last_block().produced_by}'s block.")
-                        # update stake_book
-                        self.stake_book = device.stake_book
+                        # update useful_work_book
+                        self.useful_work_book = device.useful_work_book
                         return True
         else:
             # sync chain by randomly picking a device when join in the middle (or got offline in the first comm round)
@@ -156,7 +153,7 @@ class Device():
                     online_devices_list.remove(picked_device)
                     continue
                 self.blockchain.replace_chain(picked_device.blockchain)
-                self.stake_book = picked_device.stake_book
+                self.useful_work_book = picked_device.useful_work_book
                 print(f"{self.role} {self.idx}'s chain resynced chain from {device.idx}.")
                 return True
         if self.args.resync_verbose:
@@ -217,14 +214,15 @@ class Device():
                     weight_params.add_(noise.to(self.args.dev_device))
         print(f"Device {self.idx} poisoned the whole network with variance {self.args.noise_variance}.")
 
-    def ticket_learning(self, comm_round):
+    def ticket_learning_CELL(self, comm_round):
         # adapoted CELL pruning method
+        # BUG OR FEATURE?? every worker prunes on the same global model!
         print()
         L_or_M = "M" if self._is_malicious else "L"
         print(f"\n----------{L_or_M} Worker:{self.idx} CELL Update---------------------")
 
         metrics = self.eval_model(self.model)
-        accuracy = metrics['Accuracy'][0]
+        accuracy = metrics['MulticlassAccuracy'][0]
         print(f'Global model local accuracy before pruning and training: {accuracy}')
 
         # global model prune percentage
@@ -265,7 +263,7 @@ class Device():
         print(f"\nTraining local model")
         self.train(comm_round)
 
-        ticket_acc = self.eval_model(self.model)["Accuracy"][0]
+        ticket_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
         print(f'Trained model accuracy: {ticket_acc}')
 
         wandb.log({f"{self.idx}_cur_prune_rate": self.cur_prune_rate}) # worker's prune rate, but not necessarily the same as _percent_pruned because when < validation_threshold, no prune and use the whole model
@@ -279,13 +277,51 @@ class Device():
         if self._is_malicious:
             # poison the last local model
             self.poison_model()
-            poinsoned_acc = self.eval_model(self.model)["Accuracy"][0]
+            poinsoned_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
             print(f'Poisoned accuracy: {poinsoned_acc}, decreased {ticket_acc - poinsoned_acc}.')
             # overwrite the last local model
             self.save_model_weights_to_log(comm_round, self.args.epochs)
             ticket_acc = poinsoned_acc
         
         wandb.log({f"{self.idx}_ticket_local_acc": ticket_acc, "comm_round": comm_round})
+
+    def ticket_learning_normal(self, comm_round):
+
+        print()
+        L_or_M = "M" if self._is_malicious else "L"
+        print(f"\n---------- {L_or_M} Worker:{self.idx} ticket_learning_normal Update ---------------------")
+
+        metrics = self.eval_model(self.model)
+        accuracy = metrics['MulticlassAccuracy'][0]
+        print(f'Global model local test set accuracy before training and pruning: {accuracy}')
+
+        # if rewind, reinitialize model with init_params
+        if self.args.rewind:
+            source_params = dict(self.init_global_model.named_parameters())
+            for name, param in self.model.named_parameters():
+                param.data.copy_(source_params[name].data)
+        
+        print(f"\nTraining local model")
+        self.train(comm_round)
+
+        model_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
+        print(f'Trained model accuracy: {model_acc}')
+
+        wandb.log({f"{self.idx}_cur_prune_rate": self.cur_prune_rate}) # worker's prune rate, the percent of masked weights
+
+        # save last local model
+        self.save_model_weights_to_log(comm_round, self.args.epochs)
+
+        if self._is_malicious:
+            # poison the last local model
+            self.poison_model()
+            poinsoned_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
+            print(f'Poisoned accuracy: {poinsoned_acc}, decreased {model_acc - poinsoned_acc}.')
+            # overwrite the last local model
+            self.save_model_weights_to_log(comm_round, self.args.epochs)
+            model_acc = poinsoned_acc
+        
+        wandb.log({f"{self.idx}_local_acc_after_training": model_acc, "comm_round": comm_round})    
 
     def train(self, comm_round):
         """
@@ -305,6 +341,75 @@ class Device():
                                  self.args.dev_device,
                                  self.args.train_verbose)
             losses.append(metrics['Loss'][0])
+
+    def prune_model(self, comm_round):
+        
+        print()
+        L_or_M = "M" if self._is_malicious else "L"
+        print(f"\n---------- {L_or_M} Worker:{self.idx} starts pruning ---------------------")
+
+        accs = []
+        model_weights = deque()
+
+        init_model_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
+        accs.append(init_model_acc)
+        model_weights.append(self.model.state_dict())
+
+        # model prune percentage
+        before_prune_rate = get_prune_summary(model=self.model, name='weight')['global'] # prune_rate = 0s/total_params = 1 - sparsity
+
+        prune_step = 0.05 # 5% pruning step
+        prune_amount = 0
+
+        def is_decreasing(arr, check_last_n=2):
+            if len(arr) < check_last_n:
+                return False
+
+            for i in range(-check_last_n, -1):
+                if arr[i] <= arr[i + 1]:
+                    return False
+
+            return True
+        
+        last_pruned_model = self.model
+        while True:
+            prune_amount += prune_step
+            pruned_model = copy_model_remove_mask(self.model, self.args.dev_device)
+            l1_prune(model=pruned_model,
+                        amount=prune_amount,
+                        name='weight',
+                        verbose=self.args.prune_verbose)
+            model_acc = self.eval_model(pruned_model)["MulticlassAccuracy"][0]
+            
+
+            # (1) prune until accuracy starts to decline
+            # if len(model_weights) > 1:
+            #     model_weights.popleft()
+
+            #     # Check convergence
+            #     if is_decreasing(accs):
+            #         break
+
+            
+            # (2) prune until the accuracy drops below the threshold
+            if init_model_acc - model_acc > self.args.prune_acc_drop_threshold:
+                # revert to the last pruned model
+                self.model = last_pruned_model
+                break
+            
+            accs.append(model_acc)
+            last_pruned_model = copy_model_remove_mask(pruned_model, self.args.dev_device)
+
+        after_pruning_rate = get_pruned_amount_by_mask(self.model) # prune_rate = 0s/total_params = 1 - sparsity
+
+        print(f"Model sparsity: {1 - after_pruning_rate:.2f}")
+        print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {accs[-1]:.2f}")
+        print(f"Pruned amount: {after_pruning_rate - before_prune_rate:.2f}")     
+
+        # save lateste pruned model
+        self.save_model_weights_to_log(comm_round, self.args.epochs)
+
+
             
     def make_worker_tx(self):
                 
@@ -320,16 +425,12 @@ class Device():
     def broadcast_tx(self, online_devices_list):
         # worker broadcast tx, but only validators should accept the transaction
         validators = [d for d in online_devices_list if d.role == "validator"]
-        n_validators_to_send = int(len(validators) * self.args.v_portion)
         random.shuffle(validators)
         for validator in validators:
             if validator.is_online:
                 validator.associate_with_worker(self)
                 self._associated_validators.add(validator)
-                n_validators_to_send -= 1
-                if n_validators_to_send == 0:
-                    print(f"{self.role} {self.idx} has broadcasted to validators {[v.idx for v in self._associated_validators]}")
-                    break
+                print(f"{self.role} {self.idx} has broadcasted to validators {[v.idx for v in self._associated_validators]}")
                 
     ### Validators ###
     def associate_with_worker(self, worker):
@@ -415,7 +516,7 @@ class Device():
         worker_to_points = {}
         # worker_to_layer_to_ratios = {c: {l: [] for l in layers} for c in idx_to_last_local_model_path.keys()}
         for worker_idx, worker_model_path in worker_idx_to_model.items():
-            layer_to_mask = calculate_overlapping_mask([self.model_path, worker_model_path], self.args.check_whole, self.args.overlapping_threshold, model_validation = True)
+            layer_to_mask = calculate_overlapping_mask([self.model_path, worker_model_path], self.args.check_whole, self.args.overlapping_threshold, model_validation = True) # change overlapping threshold to just check about overlapped params cosine similarity
             for layer, mask in layer_to_mask.items():
                 # overlapping_ratio = round((mask == 1).sum()/mask.size, 3)
                 overlapping_ratio = (mask == 1).sum()/mask.size
@@ -475,7 +576,7 @@ class Device():
         for iden_benigh_worker in self._iden_benigh_workers:
             iden_benigh_models.append(self._verified_worker_txs[iden_benigh_worker]['model'])
             # reward the identified benigh workers
-            self._worker_to_reward[iden_benigh_worker] = self.args.reward
+            self._device_to_useful_work[iden_benigh_worker] = self.args.reward
 
         # produce global model
         self._final_ticket_model = self.fedavg(iden_benigh_models)
@@ -513,7 +614,7 @@ class Device():
       
         last_block_hash = self.blockchain.get_last_block_hash()
 
-        block = Block(last_block_hash, self._final_ticket_model, self._worker_to_reward, self.idx, self.return_rsa_pub_key())
+        block = Block(last_block_hash, self._final_ticket_model, self._device_to_useful_work, self.idx, self.return_rsa_pub_key())
         sign_block(block)
 
         self.produced_block = block
@@ -558,9 +659,9 @@ class Device():
         while self._received_blocks:
             # TODO - check while logic when blocks are not valid
 
-            # when all validators have the same stake, workers pick randomly, a validator favors its own block. This most likely happens only in the 1st comm round
+            # when all validators have the same useful_work, workers pick randomly, a validator favors its own block. This most likely happens only in the 1st comm round
 
-            if len(set(self.stake_book.values())) == 1:
+            if len(set(self.useful_work_book.values())) == 1:
                 if self.role == 'worker':
                     picked_block = random.choice(self._received_blocks)
                     self._received_blocks.remove(picked_block)
@@ -574,9 +675,9 @@ class Device():
                 print(f"\n{self.role} {self.idx} {self._user_labels} picks {winning_validator}'s {idx_to_device[winning_validator]._user_labels} block.")
                 return picked_block
             else:
-                self.stake_book = {validator: stake for validator, stake in sorted(self.stake_book.items(), key=lambda x: x[1], reverse=True)}
+                self.useful_work_book = {validator: useful_work for validator, useful_work in sorted(self.useful_work_book.items(), key=lambda x: x[1], reverse=True)}
                 received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks}
-                for validator, stake in self.stake_book.items():
+                for validator, useful_work in self.useful_work_book.items():
                     if validator in received_validators_to_blocks:
                         picked_block = received_validators_to_blocks[validator]
                         winning_validator = validator
@@ -621,9 +722,9 @@ class Device():
         3. Record participating validators by verifying pos, dub_pos and neg voted txes by verifying '8 v_sign' in validator_tx (validator verifies other validators don't cheat on workers' signatures)
 
         promote the idea of proof-of-useful-learning -
-        1. neural network training SGD is random, and the model evolvement is represented in the stake book
+        1. neural network training SGD is random, and the model evolvement is represented in the useful_work book
         2. network pruning is also random given SGD is random, and it can be verified by checking global sparsity and model signature
-        3. when chain resync, PoW re-syncs to the longest chain, while we resync to the chain of the current highest stake holder validator. Not easy to hack. 
+        3. when chain resync, PoW re-syncs to the longest chain, while we resync to the chain of the current highest useful_work holder validator. Not easy to hack. 
         (4. role-switching is a protection, since resyncing can only resync to validator.)
         '''
         return True
@@ -636,7 +737,7 @@ class Device():
         block = self.blockchain.get_last_block()
 
         for worker, reward in block.worker_to_reward.items():
-            self.stake_book[worker] += reward
+            self.useful_work_book[worker] += reward
         
         # used to record if a block is produced by a malicious device
         self.has_appended_block = True
@@ -649,7 +750,7 @@ class Device():
         indi_acc = test_by_data_set(self.model,
                 self._test_loader,
                 self.args.dev_device,
-                self.args.test_verbose)['Accuracy'][0]
+                self.args.test_verbose)['MulticlassAccuracy'][0]
         
         print(f"\n{self.role}_{self.idx}", "indi_acc", round(indi_acc, 2))
         
@@ -661,7 +762,7 @@ class Device():
         global_acc = test_by_data_set(self.model,
                 self.global_test_loader,
                 self.args.dev_device,
-                self.args.test_verbose)['Accuracy'][0]
+                self.args.test_verbose)['MulticlassAccuracy'][0]
         print(f"\nglobal_acc: {global_acc}")
 
         wandb.log({"comm_round": comm_round, "global_acc": round(global_acc, 2)})

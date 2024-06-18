@@ -153,7 +153,7 @@ def create_model(cls, device='cuda:0') -> nn.Module:
     l1_prune(model, amount=0.00, name='weight', verbose=False)
     return model
 
-def copy_model(model: nn.Module, device='cuda:0'):
+def copy_model_remove_mask(model: nn.Module, device='cuda:0'):
     """
         Returns a copy of the input model.
         Note: the model should have been pruned for this method to work to create buffer masks and whatnot.
@@ -219,7 +219,7 @@ def train(
         output = metrics(y_hat, y)
 
         progress_bar.set_postfix({'loss': loss.item(),
-                                  'acc': output['Accuracy'].item()})
+                                  'acc': output['MulticlassAccuracy'].item()})
 
 
     outputs = metrics.compute()
@@ -257,7 +257,7 @@ def test_by_data_set(
 
         output = metrics(y_hat, y)
 
-        progress_bar.set_postfix({'acc': output['Accuracy'].item()})
+        progress_bar.set_postfix({'acc': output['MulticlassAccuracy'].item()})
 
 
     outputs = metrics.compute()
