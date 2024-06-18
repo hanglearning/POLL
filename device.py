@@ -106,9 +106,11 @@ class Device():
         self.useful_work_book = {key: 0 for key in idx_to_device.keys()}
   
     def is_online(self):
+        if 1 - get_pruned_amount_by_weights(self.model) <= self.args.target_pruned_sparsity:
+            return False
         return random.random() <= self.args.network_stability
     
-    def resync_chain(self, comm_round, idx_to_device, online_devices_list, online_validators):
+    def resync_chain(self, comm_round, idx_to_device, online_devices_list):
         if comm_round == 1:
             return False
         if self._resync_to:
@@ -374,6 +376,8 @@ class Device():
         last_pruned_model = self.model
         while True:
             prune_amount += prune_step
+            if prune_amount > self.args.max_prune_step: # prevent some devices to prune too aggressively
+                break
             pruned_model = copy_model_remove_mask(self.model, self.args.dev_device)
             l1_prune(model=pruned_model,
                         amount=prune_amount,
@@ -423,21 +427,21 @@ class Device():
         self._worker_tx = worker_tx
     
     def broadcast_tx(self, online_devices_list):
-        # worker broadcast tx, but only validators should accept the transaction
-        validators = [d for d in online_devices_list if d.role == "validator"]
-        random.shuffle(validators)
-        for validator in validators:
-            if validator.is_online:
-                validator.associate_with_worker(self)
-                self._associated_validators.add(validator)
-                print(f"{self.role} {self.idx} has broadcasted to validators {[v.idx for v in self._associated_validators]}")
+        # worker broadcast tx, imagine the tx is broadcasted to all devices volunterring to become validators
+        # see receive_and_verify_worker_tx_sig()
+        return
+        # validators = [d for d in online_devices_list if d.role == "validator"]
+        # random.shuffle(validators)
+        # for validator in validators:
+        #     if validator.is_online():
+        #         validator.associate_with_worker(self)
+        #         self._associated_validators.add(validator)
+        #         print(f"{self.role} {self.idx} has broadcasted to validators {[v.idx for v in self._associated_validators]}")
                 
     ### Validators ###
-    def associate_with_worker(self, worker):
-        self._associated_workers.add(worker)
-        
-    def receive_and_verify_worker_tx_sig(self):
-        for worker in self._associated_workers:
+
+    def receive_and_verify_worker_tx_sig(self, online_workers):
+        for worker in online_workers:
             if self.verify_tx_sig(worker._worker_tx):
                 # if self.args.mal_vs and self._is_malicious:
                 #     continue
@@ -496,73 +500,77 @@ class Device():
 
 
     # base validatation_method
-    def validate_models(self, comm_round, idx_to_device):
+    # def validate_models(self, comm_round, idx_to_device):
 
-        # validate model sparsity
-        # worker_idx_to_model = self.model_structure_validation()
-        worker_idx_to_model = {}
-        for worker_idx, worker_tx in self._verified_worker_txs.items():
-            worker_idx_to_model[worker_idx] = worker_tx['model_path']
+    #     # validate model sparsity
+    #     # worker_idx_to_model = self.model_structure_validation()
+    #     worker_idx_to_model = {}
+    #     for worker_idx, worker_tx in self._verified_worker_txs.items():
+    #         worker_idx_to_model[worker_idx] = worker_tx['model_path']
 
-        # get layers
-        layers = []
-        for layer_name, param in self.init_global_model.named_parameters():
-            if 'weight' in layer_name:
-                layers.append(layer_name.split('.')[0])
-        num_layers = len(layers)
+    #     # get layers
+    #     layers = []
+    #     for layer_name, param in self.init_global_model.named_parameters():
+    #         if 'weight' in layer_name:
+    #             layers.append(layer_name.split('.')[0])
+    #     num_layers = len(layers)
 
-        # 2 groups of models and treat the higher center group as legitimate
-        layer_to_ratios = {l:[] for l in layers} # in the order of worker
-        worker_to_points = {}
-        # worker_to_layer_to_ratios = {c: {l: [] for l in layers} for c in idx_to_last_local_model_path.keys()}
-        for worker_idx, worker_model_path in worker_idx_to_model.items():
-            layer_to_mask = calculate_overlapping_mask([self.model_path, worker_model_path], self.args.check_whole, self.args.overlapping_threshold, model_validation = True) # change overlapping threshold to just check about overlapped params cosine similarity
-            for layer, mask in layer_to_mask.items():
-                # overlapping_ratio = round((mask == 1).sum()/mask.size, 3)
-                overlapping_ratio = (mask == 1).sum()/mask.size
-                layer_to_ratios[layer].append(overlapping_ratio)
-                # worker_to_layer_to_ratios[worker_idx][layer] = overlapping_ratio
-            worker_to_points[worker_idx] = 0
+    #     # 2 groups of models and treat the higher center group as legitimate
+    #     layer_to_ratios = {l:[] for l in layers} # in the order of worker
+    #     worker_to_points = {}
+    #     # worker_to_layer_to_ratios = {c: {l: [] for l in layers} for c in idx_to_last_local_model_path.keys()}
+    #     for worker_idx, worker_model_path in worker_idx_to_model.items():
+    #         layer_to_mask = calculate_overlapping_mask([self.model_path, worker_model_path], self.args.check_whole, self.args.overlapping_threshold, model_validation = True) # change overlapping threshold to just check about overlapped params cosine similarity
+    #         for layer, mask in layer_to_mask.items():
+    #             # overlapping_ratio = round((mask == 1).sum()/mask.size, 3)
+    #             overlapping_ratio = (mask == 1).sum()/mask.size
+    #             layer_to_ratios[layer].append(overlapping_ratio)
+    #             # worker_to_layer_to_ratios[worker_idx][layer] = overlapping_ratio
+    #         worker_to_points[worker_idx] = 0
 
-        # group workers based on ratio
-        kmeans = KMeans(n_clusters=2, random_state=0) 
-        for layer, ratios in layer_to_ratios.items():
+    #     # group workers based on ratio
+    #     kmeans = KMeans(n_clusters=2, random_state=0) 
+    #     for layer, ratios in layer_to_ratios.items():
             
-            kmeans.fit(np.array(ratios).reshape(-1,1))
-            labels = list(kmeans.labels_)
+    #         kmeans.fit(np.array(ratios).reshape(-1,1))
+    #         labels = list(kmeans.labels_)
                    
-            center0 = kmeans.cluster_centers_[0]
-            center1 = kmeans.cluster_centers_[1]
+    #         center0 = kmeans.cluster_centers_[0]
+    #         center1 = kmeans.cluster_centers_[1]
 
-            benigh_center_group = 0
-            if center0 < center1:
-                benigh_center_group = 1
+    #         benigh_center_group = 0
+    #         if center0 < center1:
+    #             benigh_center_group = 1
 
-            benigh_group = []
-            workers_in_order = list(worker_idx_to_model.keys())
-            for worker_iter in range(len(workers_in_order)):
-                worker_idx = workers_in_order[worker_iter]
-                if labels[worker_iter] == benigh_center_group:
-                    benigh_group.append(worker_idx)
+    #         benigh_group = []
+    #         workers_in_order = list(worker_idx_to_model.keys())
+    #         for worker_iter in range(len(workers_in_order)):
+    #             worker_idx = workers_in_order[worker_iter]
+    #             if labels[worker_iter] == benigh_center_group:
+    #                 benigh_group.append(worker_idx)
 
-            for worker_iter in benigh_group:
-                worker_to_points[worker_iter] += 1
+    #         for worker_iter in benigh_group:
+    #             worker_to_points[worker_iter] += 1
         
-        self._iden_benigh_workers = [worker_idx for worker_idx in worker_to_points if worker_to_points[worker_idx] > num_layers * 0.5] # was >=
+    #     self._iden_benigh_workers = [worker_idx for worker_idx in worker_to_points if worker_to_points[worker_idx] > num_layers * 0.5] # was >=
 
-        # evaluate validation
-        false_positive = 0
-        for benigh_client_idx in self._iden_benigh_workers:
-            if idx_to_device[benigh_client_idx]._is_malicious:
-                false_positive += 1
-        try:
-            correct_rate = 1 - false_positive/self.args.n_malicious
-        except ZeroDivisionError:
-            correct_rate = 1
-        print(f"Validator {self.idx} selects {self._iden_benigh_workers} as benigh workers.")
-        print(f"{false_positive} in {self.args.n_malicious} identified wrong. Correct rate - {correct_rate:.2%}")
-        wandb.log({f"validator_{self.idx}_correct_rate": correct_rate, "comm_round": comm_round})
+    #     # evaluate validation
+    #     false_positive = 0
+    #     for benigh_client_idx in self._iden_benigh_workers:
+    #         if idx_to_device[benigh_client_idx]._is_malicious:
+    #             false_positive += 1
+    #     try:
+    #         correct_rate = 1 - false_positive/self.args.n_malicious
+    #     except ZeroDivisionError:
+    #         correct_rate = 1
+    #     print(f"Validator {self.idx} selects {self._iden_benigh_workers} as benigh workers.")
+    #     print(f"{false_positive} in {self.args.n_malicious} identified wrong. Correct rate - {correct_rate:.2%}")
+    #     wandb.log({f"validator_{self.idx}_correct_rate": correct_rate, "comm_round": comm_round})
 
+
+    # validate model by comparing the masks and cosine similarity of the unpruned weights, layer by layer
+    def validate_models(self, comm_round, idx_to_device):
+        return
     
     # def validator_no_exchange_tx(self):
     #     self._received_validator_txs = {}

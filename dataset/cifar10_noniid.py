@@ -84,7 +84,7 @@ def cifar_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
                     (user_labels, labels[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)]), axis=0)
             unbalance_flag = 1
 
-        display_text = f"Device {i}  - labels {list(label_to_qty.keys())}, corresponding qty {list(label_to_qty.values())}"
+        display_text = f"Device {i + 1}  - labels {list(label_to_qty.keys())}, corresponding qty {list(label_to_qty.values())}"
         with open(f'{log_dirpath}/dataset_assigned.txt', 'a') as f:
             f.write(f'{display_text}\n')
         print(display_text)

@@ -106,15 +106,15 @@ parser.add_argument('--pass_all_models', type=int, default=0, help='turn off val
 ####################### pruning setting #######################
 parser.add_argument('--target_pruned_sparsity', type=float, default=0.2)
 # parser.add_argument('--prune_step', type=float, default=0.2, help='increment of difficulty every diff_freq')
+parser.add_argument('--max_prune_step', type=float, default=0.2) # otherwise, some devices may prune too aggressively
 parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model parameters before training")
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
 
 
 ####################### blockchain setting #######################
-parser.add_argument('--n_devices', type=int, default=20)
-
-parser.add_argument('--n_workers', type=str, default='12', 
-                    help='The number of validators is determined by this number and --n_devices. If input * to this argument, num of workers and validators are random from round to round')
+parser.add_argument('--n_devices', type=int, default=10)
+parser.add_argument('--n_validators', type=str, default='*', 
+                    help='if input * to this argument, the number of validators is random from round to round')
 parser.add_argument('--check_signature', type=int, default=0, 
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
 parser.add_argument('--network_stability', type=float, default=1.0, 
@@ -201,48 +201,23 @@ def main():
     
     malicious_block_record = []
     malicious_winning_count = 0
+    
     ######## Fed-POLL ########
 
     # TODO - test with local epoch increasing, the relationship between local acc and overlapping ratio, then determine how validator should be rewarded
     for comm_round in range(1, args.comm_rounds + 1):
-        
-        ''' device assign roles '''
-        if args.n_workers == '*':
-            n_workers = random.randint(0, args.n_devices - 1)
-        else:
-            n_workers = int(args.n_workers)
                     
         random.shuffle(devices_list)
         # winning validator cannot be a validator in the next round
         # 1. May result in useful_work monopoly
-        # 2. since chain resyncing chooses the highest useful_workholding validator, if the winning validator is compromised, the attacker controls the whole chain
-        online_workers = []
-        online_validators = []
-        role_assign_list = copy(devices_list)
-        
-        # # assign devices with top useful_work to opportunistic validators
-        # if args.oppo_v and comm_round != 1:
-        #     for device in role_assign_list:
-        #         top_useful_work_device_idx = [idx for idx, useful_work in sorted(device.useful_work_book.items(), key=lambda item: item[1])][0]
-        #         if device.idx == top_useful_work_device_idx and device.is_online():
-        #             online_validators.append(device)
-        #     for oppo_validator in online_validators:
-        #         role_assign_list.remove(oppo_validator)
+        # 2. since chain resyncing chooses the highest useful_work holding validator, if the winning validator is compromised, the attacker controls the whole chain
 
-        for device_iter in range(len(role_assign_list)):
-            if device_iter < n_workers:
-                role_assign_list[device_iter].role = 'worker'
-                if role_assign_list[device_iter].is_online():
-                    online_workers.append(role_assign_list[device_iter])
-            else:
-                role_assign_list[device_iter].role = 'validator'
-                if role_assign_list[device_iter].is_online():
-                    online_validators.append(role_assign_list[device_iter])
-        
-        online_devices_list = online_workers + online_validators
+        ''' find online devices '''
+        # also, devices exit the network if reaching target_pruned_sparsity
+        init_online_devices = [device for device in devices_list if device.is_online()]
         
         ''' reset params '''
-        for device in online_devices_list:
+        for device in init_online_devices:
             device._received_blocks = []
             device.has_appended_block = False
             # workers
@@ -255,11 +230,17 @@ def main():
             device._device_to_useful_work = {}
             
         ''' device starts Fed-POLL '''
+        # all online devices become workers in this phase
+        online_workers = []
+        for device in init_online_devices:
+            device.role = 'worker'
+            online_workers.append(device)
+
         ### worker starts learning and pruning ###
         for worker_iter in range(len(online_workers)):
             worker = online_workers[worker_iter]
             # resync chain
-            if worker.resync_chain(comm_round, idx_to_device, online_devices_list, online_validators):
+            if worker.resync_chain(comm_round, idx_to_device, init_online_devices):
                 worker.post_resync()
             # perform training
             worker.ticket_learning_normal(comm_round)
@@ -267,17 +248,33 @@ def main():
             worker.prune_model(comm_round)
             # make tx
             worker.make_worker_tx()
-            # broadcast tx to the network (of validators)
-            worker.broadcast_tx(online_devices_list)
-            
+            # broadcast tx to the network
+            worker.broadcast_tx(init_online_devices)
+
         ### validators validate models ###
+
+        # workers volunteer to become validators
+        if args.n_workers == '*':
+            n_validators = random.randint(0, args.n_devices - 1)
+        else:
+            n_validators = int(args.n_validators)
+
+        online_validators = []
+        random.shuffle(online_workers)
+        for worker in online_workers:
+            if worker.is_online():
+                if n_validators > 0:
+                    worker.role = 'validator'
+                    online_validators.append(worker)
+                    n_validators -= 1
+            
         for validator_iter in range(len(online_validators)):
             validator = online_validators[validator_iter]
             # resync chain
-            if validator.resync_chain(comm_round, idx_to_device, online_devices_list, online_validators):
+            if validator.resync_chain(comm_round, idx_to_device, init_online_devices):
                 validator.post_resync()
             # verify tx signature
-            validator.receive_and_verify_worker_tx_sig()
+            validator.receive_and_verify_worker_tx_sig(online_workers)
             # validate model based on top-overlapping ratio
             validator.validate_models(comm_round, idx_to_device)
         
