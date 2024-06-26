@@ -70,7 +70,7 @@ parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
 parser.add_argument('--arch', type=str, default='cnn', help='cnn|mlp')
 parser.add_argument('--dataset_mode', type=str,default='non-iid', help='non-iid|iid')
 parser.add_argument('--comm_rounds', type=int, default=25)
-parser.add_argument('--epochs', type=int, default=5)
+parser.add_argument('--epochs', type=int, default=5, help="local training epochs, but won't be used in train to max accuracy")
 parser.add_argument('--batch_size', type=int, default=10)
 parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
@@ -106,7 +106,7 @@ parser.add_argument('--pass_all_models', type=int, default=0, help='turn off val
 ####################### pruning setting #######################
 parser.add_argument('--target_pruned_sparsity', type=float, default=0.2)
 # parser.add_argument('--prune_step', type=float, default=0.2, help='increment of difficulty every diff_freq')
-parser.add_argument('--max_prune_step', type=float, default=0.2) # otherwise, some devices may prune too aggressively
+# parser.add_argument('--max_prune_step', type=float, default=0.2) # otherwise, some devices may prune too aggressively
 parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model parameters before training")
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
 
@@ -243,7 +243,7 @@ def main():
             if worker.resync_chain(comm_round, idx_to_device, init_online_devices):
                 worker.post_resync()
             # perform training
-            worker.ticket_learning_normal(comm_round)
+            worker.ticket_learning_max(comm_round)
             # perform pruning
             worker.prune_model(comm_round)
             # make tx
@@ -254,8 +254,8 @@ def main():
         ### validators validate models ###
 
         # workers volunteer to become validators
-        if args.n_workers == '*':
-            n_validators = random.randint(0, args.n_devices - 1)
+        if args.n_validators == '*':
+            n_validators = random.randint(1, len(online_workers))
         else:
             n_validators = int(args.n_validators)
 

@@ -223,7 +223,7 @@ class Device():
         L_or_M = "M" if self._is_malicious else "L"
         print(f"\n----------{L_or_M} Worker:{self.idx} CELL Update---------------------")
 
-        metrics = self.eval_model(self.model)
+        metrics = self.eval_model_by_test(self.model)
         accuracy = metrics['MulticlassAccuracy'][0]
         print(f'Global model local accuracy before pruning and training: {accuracy}')
 
@@ -265,7 +265,7 @@ class Device():
         print(f"\nTraining local model")
         self.train(comm_round)
 
-        ticket_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
+        ticket_acc = self.eval_model_by_test(self.model)["MulticlassAccuracy"][0]
         print(f'Trained model accuracy: {ticket_acc}')
 
         wandb.log({f"{self.idx}_cur_prune_rate": self.cur_prune_rate}) # worker's prune rate, but not necessarily the same as _percent_pruned because when < validation_threshold, no prune and use the whole model
@@ -279,7 +279,7 @@ class Device():
         if self._is_malicious:
             # poison the last local model
             self.poison_model()
-            poinsoned_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
+            poinsoned_acc = self.eval_model_by_test(self.model)["MulticlassAccuracy"][0]
             print(f'Poisoned accuracy: {poinsoned_acc}, decreased {ticket_acc - poinsoned_acc}.')
             # overwrite the last local model
             self.save_model_weights_to_log(comm_round, self.args.epochs)
@@ -287,13 +287,14 @@ class Device():
         
         wandb.log({f"{self.idx}_ticket_local_acc": ticket_acc, "comm_round": comm_round})
 
-    def ticket_learning_normal(self, comm_round):
-
+    def ticket_learning_max(self, comm_round):
+        
+        # train to max accuracy
         print()
         L_or_M = "M" if self._is_malicious else "L"
-        print(f"\n---------- {L_or_M} Worker:{self.idx} ticket_learning_normal Update ---------------------")
+        print(f"\n---------- {L_or_M} Worker:{self.idx} Train to Max Acc Update ---------------------")
 
-        metrics = self.eval_model(self.model)
+        metrics = self.eval_model_by_train(self.model)
         accuracy = metrics['MulticlassAccuracy'][0]
         print(f'Global model local test set accuracy before training and pruning: {accuracy}')
 
@@ -304,12 +305,13 @@ class Device():
                 param.data.copy_(source_params[name].data)
         
         print(f"\nTraining local model")
-        self.train(comm_round)
+        # self.train()
+        self.train_to_max()
 
-        model_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
-        print(f'Trained model accuracy: {model_acc}')
+        model_acc = self.eval_model_by_train(self.model)["MulticlassAccuracy"][0]
+        print(f'Trained model max accuracy: {model_acc}')
 
-        wandb.log({f"{self.idx}_cur_prune_rate": self.cur_prune_rate}) # worker's prune rate, the percent of masked weights
+        # wandb.log({f"{self.idx}_cur_prune_rate": self.cur_prune_rate}) # worker's prune rate, the percent of masked weights
 
         # save last local model
         self.save_model_weights_to_log(comm_round, self.args.epochs)
@@ -317,7 +319,7 @@ class Device():
         if self._is_malicious:
             # poison the last local model
             self.poison_model()
-            poinsoned_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
+            poinsoned_acc = self.eval_model_by_train(self.model)["MulticlassAccuracy"][0]
             print(f'Poisoned accuracy: {poinsoned_acc}, decreased {model_acc - poinsoned_acc}.')
             # overwrite the last local model
             self.save_model_weights_to_log(comm_round, self.args.epochs)
@@ -325,7 +327,7 @@ class Device():
         
         wandb.log({f"{self.idx}_local_acc_after_training": model_acc, "comm_round": comm_round})    
 
-    def train(self, comm_round):
+    def train(self):
         """
             Train NN
         """
@@ -344,18 +346,57 @@ class Device():
                                  self.args.train_verbose)
             losses.append(metrics['Loss'][0])
 
+    def train_to_max(self):
+        
+        decraesing_epochs = 2 # if 2, meaning as soon as it starts decreasing
+
+        def is_decreasing(arr, check_last_n=decraesing_epochs):
+                if len(arr) < check_last_n:
+                    return False
+
+                for i in range(-check_last_n, -1):
+                    if arr[i] <= arr[i + 1]:
+                        return False
+
+                return True
+        
+        model_acc = self.eval_model_by_train(self.model)["MulticlassAccuracy"][0]
+        accs = [model_acc]
+        models = deque([copy_model_remove_mask(self.model, self.args.dev_device)])
+        print("Initial training accuracy", model_acc)
+
+        while True:
+            metrics = util_train(self.model,
+                                 self._train_loader,
+                                 self.args.optimizer,
+                                 self.args.lr,
+                                 self.args.dev_device,
+                                 self.args.train_verbose)
+            model_acc = self.eval_model_by_train(self.model)["MulticlassAccuracy"][0]
+            # print("Intermediate training accuracy", model_acc)
+            accs.append(model_acc)
+
+            if len(models) > decraesing_epochs - 1:
+                models.popleft()
+
+                # Check reaching max accuracy
+                if is_decreasing(accs):
+                    self.model = copy_model_remove_mask(models[-1], self.args.dev_device)
+                    break
+
+            models.append(copy_model_remove_mask(self.model, self.args.dev_device))
+
+
     def prune_model(self, comm_round):
         
         print()
         L_or_M = "M" if self._is_malicious else "L"
         print(f"\n---------- {L_or_M} Worker:{self.idx} starts pruning ---------------------")
 
-        accs = []
-        model_weights = deque()
-
-        init_model_acc = self.eval_model(self.model)["MulticlassAccuracy"][0]
-        accs.append(init_model_acc)
-        model_weights.append(self.model.state_dict())
+        init_model_acc = self.eval_model_by_train(self.model)["MulticlassAccuracy"][0]
+        accs = [init_model_acc]
+        models = deque([copy_model_remove_mask(self.model, self.args.dev_device)])
+        # print("Initial pruned model accuracy", init_model_acc)
 
         # model prune percentage
         before_prune_rate = get_prune_summary(model=self.model, name='weight')['global'] # prune_rate = 0s/total_params = 1 - sparsity
@@ -373,18 +414,18 @@ class Device():
 
             return True
         
-        last_pruned_model = self.model
+        last_pruned_model = copy_model_remove_mask(self.model, self.args.dev_device)
         while True:
             prune_amount += prune_step
-            if prune_amount > self.args.max_prune_step: # prevent some devices to prune too aggressively
-                break
+            # if prune_amount > self.args.max_prune_step: # prevent some devices to prune too aggressively
+            #     break
             pruned_model = copy_model_remove_mask(self.model, self.args.dev_device)
             l1_prune(model=pruned_model,
                         amount=prune_amount,
                         name='weight',
                         verbose=self.args.prune_verbose)
-            model_acc = self.eval_model(pruned_model)["MulticlassAccuracy"][0]
-            
+            model_acc = self.eval_model_by_train(pruned_model)["MulticlassAccuracy"][0]
+            # print("Intermediate pruned model accuracy", model_acc)
 
             # (1) prune until accuracy starts to decline
             # if len(model_weights) > 1:
@@ -395,10 +436,17 @@ class Device():
             #         break
 
             
-            # (2) prune until the accuracy drops below the threshold
-            if init_model_acc - model_acc > self.args.prune_acc_drop_threshold:
+            # (2) prune until the accuracy increases or the accuracy drop exceeds the threshold
+            if model_acc > accs[-1]:
+                # use the current model
+                self.model = copy_model_remove_mask(pruned_model, self.args.dev_device)
+                break
+
+            if init_model_acc - model_acc > self.args.prune_acc_drop_threshold or 1 - prune_amount <= self.args.target_pruned_sparsity:
                 # revert to the last pruned model
-                self.model = last_pruned_model
+                print("1 - prune_amount", 1 - prune_amount, "target_pruned_sparsity", self.args.target_pruned_sparsity)
+                print("init_model_acc - model_acc > self.args.prune_acc_drop_threshold", init_model_acc, model_acc, self.args.prune_acc_drop_threshold)
+                self.model = copy_model_remove_mask(last_pruned_model, self.args.dev_device)
                 break
             
             accs.append(model_acc)
@@ -407,7 +455,7 @@ class Device():
         after_pruning_rate = get_pruned_amount_by_mask(self.model) # prune_rate = 0s/total_params = 1 - sparsity
 
         print(f"Model sparsity: {1 - after_pruning_rate:.2f}")
-        print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {accs[-1]:.2f}")
+        print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {self.eval_model_by_train(self.model)["MulticlassAccuracy"][0]:.2f}")
         print(f"Pruned amount: {after_pruning_rate - before_prune_rate:.2f}")     
 
         # save lateste pruned model
@@ -421,7 +469,8 @@ class Device():
             'worker_idx' : self.idx,
             'rsa_pub_key': self.return_rsa_pub_key(),
             'model' : pytorch_make_prune_permanent(self.model),
-            'model_path' : self.last_local_model_path,
+            # 'model_path' : self.last_local_model_path, # in reality could be IPFS
+            # TODO - sum over tows and columns as model sig
         }
         worker_tx['tx_sig'] = self.sign_msg(str(worker_tx))
         self._worker_tx = worker_tx
@@ -443,9 +492,6 @@ class Device():
     def receive_and_verify_worker_tx_sig(self, online_workers):
         for worker in online_workers:
             if self.verify_tx_sig(worker._worker_tx):
-                # if self.args.mal_vs and self._is_malicious:
-                #     continue
-                # abandoned, too easy to spot
                 print(f"Validator {self.idx} has received and verified the signature of the tx from worker {worker.idx}.")
                 self._verified_worker_txs[worker.idx] = worker._worker_tx
             else:
@@ -570,6 +616,33 @@ class Device():
 
     # validate model by comparing the masks and cosine similarity of the unpruned weights, layer by layer
     def validate_models(self, comm_round, idx_to_device):
+        # at this moment, both models have no mask objects, and may or may not have been pruned
+       
+        # get validator's mask
+        validator_layer_to_weights = get_trainable_model_weights(self.model)
+       
+        def cosine_similarity(a, b):
+            dot_product = np.dot(a, b)
+            norm_a = np.linalg.norm(a)
+            norm_b = np.linalg.norm(b)
+            return dot_product / (norm_a * norm_b)
+        
+        for widx, wtx in self._verified_worker_txs.items():
+            weights_layer_to_cosine_similarity = {}
+            worker_model = wtx['model']
+            worker_layer_to_weights = get_trainable_model_weights(worker_model)        
+            # calculate cosine similarity of weights and masks between validator and worker's models
+            for layer, v_weights in validator_layer_to_weights.items():
+                if layer in worker_layer_to_weights:
+                    w_weights = worker_layer_to_weights[layer]
+                    weights_layer_to_cosine_similarity[layer] = cosine_similarity(w_weights.flatten(), v_weights.flatten())
+        
+        print("v labels", self._user_labels)
+        print("w labels", idx_to_device[widx]._user_labels)
+        print(sum(weights_layer_to_cosine_similarity.values()))
+        
+        
+        
         return
     
     # def validator_no_exchange_tx(self):
@@ -777,12 +850,22 @@ class Device():
 
         return global_acc
 
-    def eval_model(self, model):
+    def eval_model_by_test(self, model):
         """
-            Eval self.model
+            Eval self.model by test dataset - containing all samples corresponding to the device's training labels
         """
         eval_score = test_by_data_set(model,
                                self._test_loader,
+                               self.args.dev_device,
+                               self.args.test_verbose)
+        return eval_score
+
+    def eval_model_by_train(self, model):
+        """
+            Eval self.model by test dataset - containing all samples corresponding to the device's training labels
+        """
+        eval_score = test_by_data_set(model,
+                               self._train_loader,
                                self.args.dev_device,
                                self.args.test_verbose)
         return eval_score
