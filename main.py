@@ -6,7 +6,7 @@
 1. log latest model accuracy in test_indi_accuracy()
 2. log validation mechanism performance in check_validation_performance()
 3. log forking event at the end of main.py
-4. log useful_work book at the end of main.py
+4. log pouw book at the end of main.py
 5. log when a malicious block has been added by any device in the network 
 '''
 import os
@@ -70,7 +70,7 @@ parser.add_argument('--dataset', help="mnist|cifar10",type=str, default="mnist")
 parser.add_argument('--arch', type=str, default='cnn', help='cnn|mlp')
 parser.add_argument('--dataset_mode', type=str,default='non-iid', help='non-iid|iid')
 parser.add_argument('--comm_rounds', type=int, default=25)
-parser.add_argument('--epochs', type=int, default=5, help="local training epochs, but won't be used in train to max accuracy")
+parser.add_argument('--epochs', type=int, default=500, help="local max training epochs to get the max accuracy")
 parser.add_argument('--batch_size', type=int, default=10)
 parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
@@ -97,7 +97,7 @@ parser.add_argument('--prune_threshold', type=float, default=0.8)
 
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
 
-# parser.add_argument('--oppo_v', type=int, default=1, help="opportunistic validator - simulate that when a device sees its useful_work top 1, choose its role as validator")
+# parser.add_argument('--oppo_v', type=int, default=1, help="opportunistic validator - simulate that when a device sees its pouw top 1, choose its role as validator")
 
 # parser.add_argument('--overlapping_threshold', type=float, default=0.2, help='check this percent of top overlapping ragion')
 # parser.add_argument('--check_whole', type=int, default=1, help='check the whole network for overlapping_threshold or unpruned region. checking the whole network makes pruning faster')
@@ -209,8 +209,8 @@ def main():
                     
         random.shuffle(devices_list)
         # winning validator cannot be a validator in the next round
-        # 1. May result in useful_work monopoly
-        # 2. since chain resyncing chooses the highest useful_work holding validator, if the winning validator is compromised, the attacker controls the whole chain
+        # 1. May result in pouw monopoly
+        # 2. since chain resyncing chooses the highest pouw holding validator, if the winning validator is compromised, the attacker controls the whole chain
 
         ''' find online devices '''
         # also, devices exit the network if reaching target_pruned_sparsity
@@ -218,16 +218,17 @@ def main():
         
         ''' reset params '''
         for device in init_online_devices:
-            device._received_blocks = []
+            device._received_blocks = {}
             device.has_appended_block = False
+            # device._device_to_ungranted_pouw = {}
             # workers
             device._associated_validators = set()
             # validators
             device._verified_worker_txs = {}
-            device._final_ticket_model = None
-            device.produced_block = None
-            device._iden_benigh_workers = None
-            device._device_to_useful_work = {}
+            device._final_global_model = None
+            device.produced_block = None            
+            device.benigh_worker_to_acc = {}
+            device.malicious_worker_to_acc = {}
             
         ''' device starts Fed-POLL '''
         # all online devices become workers in this phase
@@ -243,13 +244,13 @@ def main():
             if worker.resync_chain(comm_round, idx_to_device, init_online_devices):
                 worker.post_resync()
             # perform training
-            worker.ticket_learning_max(comm_round)
+            worker.model_learning_max(comm_round)
             # perform pruning
             worker.prune_model(comm_round)
             # make tx
             worker.make_worker_tx()
             # broadcast tx to the network
-            worker.broadcast_tx(init_online_devices)
+            worker.broadcast_worker_tx(init_online_devices)
 
         ### validators validate models ###
 
@@ -273,23 +274,30 @@ def main():
             # resync chain
             if validator.resync_chain(comm_round, idx_to_device, init_online_devices):
                 validator.post_resync()
-            # verify tx signature
+            # verify worker tx signature
             validator.receive_and_verify_worker_tx_sig(online_workers)
-            # validate model based on top-overlapping ratio
+            # validate model based on euclidean distance and accuracy
             validator.validate_models(comm_round, idx_to_device)
+            # make validator transaction
+            validator.make_validator_tx()
+            # broadcast tx to all the validators
+            validator.broadcast_validator_tx(online_validators)
+            # verify validator tx signature
+            validator.receive_and_verify_validator_tx_sig(online_validators)
+
         
         ### validators perform FedAvg and produce blocks ###
         for validator_iter in range(len(online_validators)):
             validator = online_validators[validator_iter]
-            # validator produces global ticket model
+            # validator produces global model
             validator.produce_global_model_and_reward()
             # validator produce block
             block = validator.produce_block()
             # validator broadcasts block
-            validator.broadcast_block(online_devices_list, block)
+            validator.broadcast_block(validator.idx, online_workers, block)
         
         ### all ONLINE devices process received blocks ###
-        for device in online_devices_list:
+        for device in online_workers:
             # pick winning block based on PoS
             winning_block = device.pick_wining_block(idx_to_device)
             if not winning_block:
@@ -325,11 +333,11 @@ def main():
             forking = 1
         wandb.log({"comm_round": comm_round, "forking_event": forking})
 
-        ### record useful_work book ###
+        ### record pouw book ###
         for device in devices_list:
             to_log = {}
             to_log["comm_round"] = comm_round
-            to_log[f"{device.idx}_useful_work_book"] = device.useful_work_book
+            to_log[f"{device.idx}_pouw_book"] = device.pouw_book
             wandb.log(to_log)
 
         ### record when malicious validator produced a block in network ###

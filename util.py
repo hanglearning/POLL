@@ -130,6 +130,28 @@ def fed_avg(models: List[nn.Module], weight: float, device='cuda:0'):
             param.data.copy_(param.data + weighted_param)
     return aggr_model
 
+@torch.no_grad()
+def weighted_fedavg(acc_to_model, device='cuda:0'):
+    """
+        acc_to_model: dict of accuracy to model, with accuracy being weight
+    """
+    weights = acc_to_model.keys()
+    models = acc_to_model.values()
+
+    aggr_model = models[0].__class__().to(device)
+    model_params = []
+    num_models = len(models)
+    for model in models:
+        model_params.append(dict(model.named_parameters()))
+
+    for name, param in aggr_model.named_parameters():
+        param.data.copy_(torch.zeros_like(param.data))
+        for i in range(num_models):
+            weighted_param = torch.mul(
+                model_params[i][name].data, weights[i])
+            param.data.copy_(param.data + weighted_param)
+    return aggr_model
+
 def apply_local_mask(model, mask):
     # apply mask in-place to model
     # direct multiplying instead of adding mask object
@@ -153,7 +175,7 @@ def create_model(cls, device='cuda:0') -> nn.Module:
     l1_prune(model, amount=0.00, name='weight', verbose=False)
     return model
 
-def copy_model_remove_mask(model: nn.Module, device='cuda:0'):
+def copy_model(model: nn.Module, device='cuda:0'):
     """
         Returns a copy of the input model.
         Note: the model should have been pruned for this method to work to create buffer masks and whatnot.
@@ -326,7 +348,7 @@ def generate_mask_from_0_weights(model):
         mask_amount = torch.eq(weights.data, 0.00).sum().item()
         prune.l1_unstructured(param, name, amount=mask_amount)
         
-def pytorch_make_prune_permanent(model):
+def make_prune_permanent(model):
     params_pruned = get_prune_params(model, name='weight')
     try:
         for param, name in params_pruned:
@@ -336,6 +358,12 @@ def pytorch_make_prune_permanent(model):
         pass
     return model
 
+def check_mask_object_from_model(model):
+    for layer, module in model.named_children():
+        for name, mask in module.named_buffers():
+            if 'mask' in name:
+                return True
+    return False
 
 
 def get_trainable_model_weights(model):

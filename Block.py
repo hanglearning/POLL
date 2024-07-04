@@ -3,9 +3,9 @@ import json
 from hashlib import sha256
 
 class Block:
-    def __init__(self, previous_block_hash, global_ticket_model, worker_to_reward, produced_by, validator_rsa_pub_key):
+    def __init__(self, previous_block_hash, global_model_in_block, worker_to_reward, produced_by, validator_rsa_pub_key):
         self.previous_block_hash = previous_block_hash
-        self.global_ticket_model = global_ticket_model
+        self.global_model_in_block = global_model_in_block
         self.worker_to_reward = worker_to_reward
         # validator specific
         self.produced_by = produced_by
