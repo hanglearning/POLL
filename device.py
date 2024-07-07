@@ -113,8 +113,8 @@ class Device():
   
     def is_online(self):
         curr_sparsity = 1 - get_pruned_amount_by_weights(self.model)
-        if curr_sparsity <= self.args.target_pruned_sparsity:
-            print(f"Device {self.idx}'s current sparsity is {curr_sparsity}, offline.")
+        if curr_sparsity <= self.args.target_pruned_sparsity and self.max_model_acc >= self.args.target_acc:
+            print(f"Device {self.idx}'s current sparsity {curr_sparsity} with acc {self.max_model_acc}, offline.")
             return False
         return random.random() <= self.args.network_stability
     
@@ -332,13 +332,13 @@ class Device():
             if self.args.train_verbose:
                 print(f"Client={self.idx}, epoch={epoch + 1}")
 
-            metrics = util_train(self.model,
-                                self._train_loader,
-                                self.args.optimizer,
-                                self.args.lr,
-                                self.args.dev_device,
-                                self.args.train_verbose)
-            acc = metrics['MulticlassAccuracy'][0]
+            util_train(self.model,
+                        self._train_loader,
+                        self.args.optimizer,
+                        self.args.lr,
+                        self.args.dev_device,
+                        self.args.train_verbose)
+            acc = self.eval_model_by_train(self.model)['MulticlassAccuracy'][0]
             # print(epoch + 1, acc)
             if acc > max_acc:
                 # print(self.idx, "epoch", epoch + 1, acc)
@@ -352,13 +352,13 @@ class Device():
         print(f"Client {self.idx} trained for {epoch} epochs with max training acc {max_acc} arrived at epoch {max_model_epoch}.")
 
         self.model = max_model
-        self.max_train_acc = max_acc
+        self.max_model_acc = max_acc
 
         # self.is_malicious = True
 
         self.save_model_weights_to_log(comm_round, max_model_epoch)
         
-        wandb.log({f"{self.idx}_local_max_acc_after_training": self.max_train_acc, "comm_round": comm_round})    
+        wandb.log({f"{self.idx}_local_max_acc_after_training": self.max_model_acc, "comm_round": comm_round})    
 
     def train(self):
         """
@@ -434,7 +434,7 @@ class Device():
             # if model_acc > accs[-1]:
             #     # use the current model
             #     self.model = copy_model(pruned_model, self.args.dev_device)
-            #     self.max_train_acc = model_acc
+            #     self.max_model_acc = model_acc
             #     break
             
             # prune until the accuracy drop exceeds the threshold
@@ -443,7 +443,7 @@ class Device():
                 # print("pruned amount", pruned_amount, "target_pruned_sparsity", self.args.target_pruned_sparsity)
                 # print(f"init_model_acc - model_acc: {init_model_acc- model_acc} > self.args.prune_acc_drop_threshold: {self.args.prune_acc_drop_threshold}")
                 self.model = copy_model(last_pruned_model, self.args.dev_device)
-                self.max_train_acc = accs[-1]
+                self.max_model_acc = accs[-1]
                 break
             
             accs.append(model_acc)
@@ -464,7 +464,7 @@ class Device():
             poinsoned_acc = self.eval_model_by_train(self.model)['MulticlassAccuracy'][0]
             accs.append(poinsoned_acc)
             print(f'Poisoned accuracy: {poinsoned_acc}, decreased {after_pruning_acc - poinsoned_acc}.')
-            # self.max_train_acc = poinsoned_acc  
+            # self.max_model_acc = poinsoned_acc  
 
         # save lateste pruned model
         self.save_model_weights_to_log(comm_round, self.args.epochs)
@@ -512,7 +512,7 @@ class Device():
                 # print("pruned amount", pruned_amount, "target_pruned_sparsity", self.args.target_pruned_sparsity)
                 # print(f"init_model_acc - model_acc: {init_model_acc- model_acc} > self.args.prune_acc_drop_threshold: {self.args.prune_acc_drop_threshold}")
                 self.final_ticket_model = copy_model(last_pruned_model, self.args.dev_device)
-                self.max_train_acc = accs[-1]
+                self.max_model_acc = accs[-1]
                 break
             
             accs.append(model_acc)
@@ -792,8 +792,8 @@ class Device():
                 self._device_to_ungranted_pouw[worker_idx] = worker_acc
 
         # add its own model
-        acc_weight_to_benigh_models[self.max_train_acc + self._pouw_book[self.idx]] = self.model
-        self._device_to_ungranted_pouw[self.idx] = self.max_train_acc
+        acc_weight_to_benigh_models[self.max_model_acc + self._pouw_book[self.idx]] = self.model
+        self._device_to_ungranted_pouw[self.idx] = self.max_model_acc
 
         # normalize weights (again) to between 0 and 1
         acc_weight_to_benigh_models = {acc/sum(acc_weight_to_benigh_models.keys()): model for acc, model in acc_weight_to_benigh_models.items()}

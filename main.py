@@ -97,6 +97,10 @@ parser.add_argument('--dataloader_workers', type=int, default=0, help='num of py
 parser.add_argument('--prune_threshold', type=float, default=0.8)
 
 ####################### validation and rewards setting #######################
+parser.add_argument('--target_acc', type=float, default=0.9, help='target accuracy for training and/or pruning, gone offline if achieved')
+
+
+####################### validation and rewards setting #######################
 
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
 parser.add_argument('--validate_center_threshold', type=float, default=0.1, help='only recognize malicious devices if the difference of two centers of KMeans exceed this threshold')
@@ -285,10 +289,9 @@ def main():
 
         for worker in online_workers:
             if worker.is_online() and n_validators > 0:
-                if comm_round == 1 or worker.blockchain.get_last_block().produced_by != worker.idx: # by rule, a winning validator cannot be a validator in the next round
-                    worker.role = 'validator'
-                    online_validators.append(worker)
-                    n_validators -= 1
+                worker.role = 'validator'
+                online_validators.append(worker)
+                n_validators -= 1
             
         for validator_iter in range(len(online_validators)):
             validator = online_validators[validator_iter]
