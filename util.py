@@ -90,6 +90,8 @@ def l1_prune(model, amount=0.00, name='weight', verbose=True):
 def produce_mask_from_model(model):
     # use prune with 0 amount to init mask for the model
     # create mask in-place on model
+    if check_mask_object_from_model(model):
+        return
     l1_prune(model=model,
                 amount=0.00,
                 name='weight',
@@ -131,12 +133,12 @@ def fed_avg(models: List[nn.Module], weight: float, device='cuda:0'):
     return aggr_model
 
 @torch.no_grad()
-def weighted_fedavg(acc_to_model, device='cuda:0'):
+def weighted_fedavg(weights_to_model, device='cuda:0'):
     """
-        acc_to_model: dict of accuracy to model, with accuracy being weight
+        weights_to_model: dict of accuracy to model, with accuracy being weight
     """
-    weights = acc_to_model.keys()
-    models = acc_to_model.values()
+    weights = list(weights_to_model.keys())
+    models = list(weights_to_model.values())
 
     aggr_model = models[0].__class__().to(device)
     model_params = []
@@ -321,7 +323,22 @@ def get_pruned_amount_by_mask(model):
                     total_0_count += len(list(zip(*np.where(mask == 0))))
     return total_0_count / total_params_count
 
-    
+def sum_over_model_params(model):
+    layer_to_model_sig_row = {}
+    layer_to_model_sig_col = {}
+
+    for layer, module in model.named_children():
+        for name, weight_params in module.named_parameters():
+            if 'weight' in name:
+                if weight_params.is_cuda:
+                    layer_to_model_sig_row[layer] = torch.sum(weight_params.cpu(), dim=1)
+                    layer_to_model_sig_col[layer] = torch.sum(weight_params.cpu(), dim=0)
+                else:
+                    layer_to_model_sig_row[layer] = torch.sum(weight_params, dim=1)
+                    layer_to_model_sig_col[layer] = torch.sum(weight_params, dim=0)
+
+    return layer_to_model_sig_row, layer_to_model_sig_col
+
 
 def get_num_total_model_params(model):
     total_num_model_params = 0
@@ -329,7 +346,7 @@ def get_num_total_model_params(model):
     for layer_name, params in model.named_parameters():
         if 'weight' in layer_name:
             total_num_model_params += params.numel()
-    return total_num_model_params
+    return total_num_model_params    
 
 def get_model_sig_sparsity(model, model_sig):
     total_num_model_params = get_num_total_model_params(model)

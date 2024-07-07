@@ -2,6 +2,9 @@
 # TODO - write model signature function
 # TODO - check pruning difficulty change and reinit correctly
 
+# TODO - EARLY stop if target pruning rate and accuracy reached
+# TODO - prevent free or lazy rider - 
+
 ''' wandb.log()
 1. log latest model accuracy in test_indi_accuracy()
 2. log validation mechanism performance in check_validation_performance()
@@ -27,7 +30,7 @@ from dataset.datasource import DataLoaders
 from torchmetrics import MetricCollection, Accuracy, Precision, Recall
 import random
 from copy import copy
-
+from collections import defaultdict
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -96,6 +99,7 @@ parser.add_argument('--prune_threshold', type=float, default=0.8)
 ####################### validation and rewards setting #######################
 
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
+parser.add_argument('--validate_center_threshold', type=float, default=0.1, help='only recognize malicious devices if the difference of two centers of KMeans exceed this threshold')
 
 # parser.add_argument('--oppo_v', type=int, default=1, help="opportunistic validator - simulate that when a device sees its pouw top 1, choose its role as validator")
 
@@ -105,9 +109,9 @@ parser.add_argument('--pass_all_models', type=int, default=0, help='turn off val
 
 ####################### pruning setting #######################
 parser.add_argument('--target_pruned_sparsity', type=float, default=0.2)
-# parser.add_argument('--prune_step', type=float, default=0.2, help='increment of difficulty every diff_freq')
+parser.add_argument('--prune_step', type=float, default=0.05, help='increment of pruning step')
 # parser.add_argument('--max_prune_step', type=float, default=0.2) # otherwise, some devices may prune too aggressively
-parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model parameters before training")
+parser.add_argument('--rewind', type=int, default=0, help="reinit ticket model parameters before training")
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
 
 
@@ -220,15 +224,19 @@ def main():
         for device in init_online_devices:
             device._received_blocks = {}
             device.has_appended_block = False
-            # device._device_to_ungranted_pouw = {}
             # workers
             device._associated_validators = set()
+            device.layer_to_model_sig_row = {}
+            device.layer_to_model_sig_col = {}
             # validators
             device._verified_worker_txs = {}
             device._final_global_model = None
+            device.final_ticket_model = None
             device.produced_block = None            
             device.benigh_worker_to_acc = {}
             device.malicious_worker_to_acc = {}
+            device._device_to_ungranted_pouw = {}
+            device.worker_to_model_sig = {}
             
         ''' device starts Fed-POLL '''
         # all online devices become workers in this phase
@@ -247,6 +255,8 @@ def main():
             worker.model_learning_max(comm_round)
             # perform pruning
             worker.prune_model(comm_round)
+            # generate model signature
+            worker.generate_model_sig()
             # make tx
             worker.make_worker_tx()
             # broadcast tx to the network
@@ -262,9 +272,20 @@ def main():
 
         online_validators = []
         random.shuffle(online_workers)
+        # for worker in online_workers:
+        #     if worker.is_online():
+        #         if comm_round == 1 and n_validators > 0:
+        #             worker.role = 'validator'
+        #             online_validators.append(worker)
+        #             n_validators -= 1
+        #         else:
+        #             if n_validators > 0 and worker.blockchain.get_last_block().produced_by != worker.idx: 
+        #                 online_validators.append(worker)
+        #                 n_validators -= 1
+
         for worker in online_workers:
-            if worker.is_online():
-                if n_validators > 0:
+            if worker.is_online() and n_validators > 0:
+                if comm_round == 1 or worker.blockchain.get_last_block().produced_by != worker.idx: # by rule, a winning validator cannot be a validator in the next round
                     worker.role = 'validator'
                     online_validators.append(worker)
                     n_validators -= 1
@@ -282,15 +303,15 @@ def main():
             validator.make_validator_tx()
             # broadcast tx to all the validators
             validator.broadcast_validator_tx(online_validators)
-            # verify validator tx signature
-            validator.receive_and_verify_validator_tx_sig(online_validators)
 
         
         ### validators perform FedAvg and produce blocks ###
         for validator_iter in range(len(online_validators)):
             validator = online_validators[validator_iter]
+            # verify validator tx signature
+            validator.receive_and_verify_validator_tx_sig(online_validators)
             # validator produces global model
-            validator.produce_global_model_and_reward()
+            validator.produce_global_model_and_reward(comm_round)
             # validator produce block
             block = validator.produce_block()
             # validator broadcasts block
@@ -298,38 +319,23 @@ def main():
         
         ### all ONLINE devices process received blocks ###
         for device in online_workers:
-            # pick winning block based on PoS
+            # pick winning block based on PoUW
             winning_block = device.pick_wining_block(idx_to_device)
             if not winning_block:
                 # no winning_block found, perform chain_resync next round
                 continue
             # check block
-            if not device.check_block_when_appending(winning_block):
+            if not device.verify_block(winning_block):
                 # block check failed, perform chain_resync next round
                 continue
             # append and process block
             device.append_and_process_block(winning_block, comm_round)
             # check performance of the validation mechanism
             # device.check_validation_performance(winning_block, idx_to_device, comm_round)
-        
-        ### all devices test latest models ###
-        benigh_device_accs = []
-        if comm_round == 1 or comm_round % args.log_model_acc_freq == 0:
-            # this process is slow, so added frequency control
-            for device in devices_list:
-                acc = device.test_indi_accuracy(comm_round)
-                if not device._is_malicious:
-                    benigh_device_accs.append(acc)
-        wandb.log({"comm_round": comm_round, "avg_acc_benigh_devices": np.mean(benigh_device_accs)})
-            # device.test_global_accuracy(comm_round)
-
-        # import pdb
-        # pdb.set_trace()
-
 
         ### record forking events ###
         forking = 0
-        if len(set([d.blockchain.get_last_block().produced_by for d in online_devices_list])) != 1:
+        if len(set([d.blockchain.get_last_block().produced_by for d in online_workers])) != 1:
             forking = 1
         wandb.log({"comm_round": comm_round, "forking_event": forking})
 
@@ -337,12 +343,12 @@ def main():
         for device in devices_list:
             to_log = {}
             to_log["comm_round"] = comm_round
-            to_log[f"{device.idx}_pouw_book"] = device.pouw_book
+            to_log[f"{device.idx}_pouw_book"] = device._pouw_book
             wandb.log(to_log)
 
-        ### record when malicious validator produced a block in network ###
+        ### record when malicious validator produced a winning block in network ###
         malicious_block = 0
-        for device in online_devices_list:
+        for device in online_workers:
             if device.has_appended_block:
                 block_produced_by = device.blockchain.get_last_block().produced_by
                 if idx_to_device[block_produced_by]._is_malicious:
