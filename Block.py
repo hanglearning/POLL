@@ -3,10 +3,10 @@ import json
 from hashlib import sha256
 
 class Block:
-    def __init__(self, previous_block_hash, global_model_in_block, worker_to_pouw, produced_by, worker_to_model_sig, validator_rsa_pub_key):
+    def __init__(self, previous_block_hash, global_model_in_block, worker_to_uw, produced_by, worker_to_model_sig, validator_rsa_pub_key):
         self.previous_block_hash = previous_block_hash
         self.global_model_in_block = global_model_in_block
-        self.worker_to_uw = worker_to_pouw
+        self.worker_to_uw = worker_to_uw
         # validator specific
         self.produced_by = produced_by
         self.worker_to_model_sig = worker_to_model_sig
