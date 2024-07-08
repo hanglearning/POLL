@@ -266,7 +266,7 @@ class Device():
                     # noise = self.args.noise_variance * torch.randn(weight_params.size()).to(self.args.dev_device) * torch.from_numpy(layer_to_mask[layer]).to(self.args.dev_device)
                     noise = self.args.noise_variance * torch.randn(weight_params.size()).to(self.args.dev_device) * layer_to_mask[layer].to(self.args.dev_device)
                     weight_params.add_(noise.to(self.args.dev_device))
-        print(f"Device {self.idx} poisoned the whole network with variance {self.args.noise_variance}.") # or should say, unpruned weights?
+        print(f"Device {self.idx} poisoned the whole neural network with variance {self.args.noise_variance}.") # or should say, unpruned weights?
 
     def generate_model_sig(self):
         
@@ -552,7 +552,7 @@ class Device():
 
         print(f"Model sparsity: {1 - after_pruning_rate:.2f}")
         print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
-        print(f"Pruned amount: {init_pruned_amount - after_pruning_rate:.2f}")
+        print(f"Pruned amount: {after_pruning_rate - init_pruned_amount:.2f}")
 
         if self._is_malicious:
             self.poison_model(self.final_ticket_model)
@@ -740,9 +740,9 @@ class Device():
 
             if len(set(self._pouw_book.values())) == 1:
                 if self.role == 'worker':
-                    picked_validator = random.choice(self._received_blocks.keys())
+                    picked_validator = random.choice(list(self._received_blocks.keys()))
                     picked_block = self._received_blocks[picked_validator]
-                    self._received_blocks.remove(picked_validator)
+                    self._received_blocks.pop(picked_validator, None)
                     if self.verify_block_sig(picked_block):
                         winning_validator = picked_block.produced_by
                     else:
