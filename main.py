@@ -85,6 +85,9 @@ parser.add_argument('--target_acc', type=float, default=0.9, help='target accura
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
 parser.add_argument('--validate_center_threshold', type=float, default=0.1, help='only recognize malicious devices if the difference of two centers of KMeans exceed this threshold')
 
+####################### attack setting #######################
+parser.add_argument('--attack_type', type=int, default=2, help='0 - no attack, 1 - model poisoning attack, 2 - label flipping attack, 3 - lazy attack')
+
 ####################### pruning setting #######################
 parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model parameters before training")
 parser.add_argument('--target_sparsity', type=float, default=0.2)
@@ -136,7 +139,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    # wandb.init(mode="disabled")
+    wandb.init(mode="disabled")
     wandb.run.name = log_root_name
     wandb.config.update(args)
     

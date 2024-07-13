@@ -1,4 +1,4 @@
-# TODO - record accuracy and pruning rate after training and pruning
+# TODO - record accuracy and pruned amount after training and pruning
 
 import torch
 import numpy as np
@@ -15,8 +15,11 @@ from hashlib import sha256
 from Block import Block
 from Blockchain import Blockchain
 import random
+import math
 
 from collections import defaultdict
+from torch.utils.data import DataLoader
+
 
 class Device():
     def __init__(
@@ -102,6 +105,12 @@ class Device():
     
     ''' Workers' Method '''
 
+    def flip_labels(self):
+        # Access the underlying dataset
+        self._train_loader.dataset.targets = 10 - self._train_loader.dataset.targets
+
+
+
     def model_learning_max(self, comm_round):
         
         # train to max accuracy
@@ -119,10 +128,15 @@ class Device():
                 param.data.copy_(source_params[name].data)
 
         max_epoch = self.args.epochs # 500 is arbitrary, stronger hardware can have more
-        # if self.is_malicious:
-        #     max_epoch = 20 # undertrain
-        #     if self.idx == 11:
-        #         max_epoch = 0 # freerider
+
+        # label flipping attack
+        if self._is_malicious and self.args.attack_type == 2:
+            self.flip_labels()
+
+        # lazy worker
+        if self._is_malicious and self.args.attack_type == 3:
+            max_epoch = math.ceil(max_epoch * 0.2)
+
         
         epoch = 0
         max_model_epoch = epoch
@@ -157,6 +171,15 @@ class Device():
         self.model = max_model
         self.max_model_acc = max_acc
 
+        # model poisoning attack
+        if self._is_malicious and self.args.attack_type == 1:
+            # poison the last local model
+            self.poison_model(self.model)
+            poinsoned_acc = self.eval_model_by_train(self.model)
+            print(f'Poisoned accuracy: {poinsoned_acc}, decreased {self.max_model_acc - poinsoned_acc}.')
+            self.max_model_acc = poinsoned_acc  
+            # wandb.log({f"{self.idx}_after_poisoning_acc": poinsoned_acc, "comm_round": comm_round})  
+
         # self.save_model_weights_to_log(comm_round, max_model_epoch)
         wandb.log({f"{self.idx}_{self._user_labels}_trained_model_sparsity": 1 - get_pruned_amount_by_mask(self.model), "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_max_local_training_acc": self.max_model_acc, "comm_round": comm_round})
@@ -172,12 +195,12 @@ class Device():
         init_model_acc = self.eval_model_by_train(self.model)
         
         accs = [init_model_acc]
-        # models = deque([copy_model(self.model, self.args.dev_device)]) - used if want the model with the best accuracy arrived at an intermediate pruning rate
+        # models = deque([copy_model(self.model, self.args.dev_device)]) - used if want the model with the best accuracy arrived at an intermediate pruned amount
         # print("Initial pruned model accuracy", init_model_acc)
 
         # model prune percentage
-        before_prune_rate = get_prune_summary(model=self.model, name='weight')['global'] # prune_rate = 0s/total_params = 1 - sparsity
-        pruned_amount = before_prune_rate
+        before_pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
+        pruned_amount = before_pruned_amount
         
         def is_decreasing(arr, check_last_n=2):
             if len(arr) < check_last_n:
@@ -232,24 +255,14 @@ class Device():
             accs.append(model_acc)
             last_pruned_model = copy_model(pruned_model, self.args.dev_device)
 
-        after_pruning_rate = get_pruned_amount_by_mask(self.model) # prune_rate = 0s/total_params = 1 - sparsity
+        after_pruned_amount = get_pruned_amount_by_mask(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
         after_pruning_acc = self.eval_model_by_train(self.model)
 
-        print(f"Model sparsity: {1 - after_pruning_rate:.2f}")
+        print(f"Model sparsity: {1 - after_pruned_amount:.2f}")
         print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
-        print(f"Pruned amount: {after_pruning_rate - before_prune_rate:.2f}")
+        print(f"Pruned amount: {after_pruned_amount - before_pruned_amount:.2f}")
 
-        wandb.log({f"{self.idx}_after_pruning_acc": after_pruning_acc, "comm_round": comm_round})
-
-        if self._is_malicious:
-            # poison the last local model
-            self.poison_model(self.model)
-            poinsoned_acc = self.eval_model_by_train(self.model)
-            print(f'Poisoned accuracy: {poinsoned_acc}, decreased {after_pruning_acc - poinsoned_acc}.')
-            # self.max_model_acc = poinsoned_acc  
-            wandb.log({f"{self.idx}_after_poisoning_acc": poinsoned_acc, "comm_round": comm_round})  
-
-        wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_sparsity": 1 - after_pruning_rate, "comm_round": comm_round})
+        wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_sparsity": 1 - after_pruned_amount, "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_acc": after_pruning_acc, "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_local_test_acc": self.eval_model_by_local_test(self.model), "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_global_test_acc": self.eval_model_by_global_test(self.model), "comm_round": comm_round})
@@ -293,14 +306,6 @@ class Device():
         # see receive_and_verify_worker_tx_sig()
         print(f"Worker {self.idx} is broadcasting worker transaction to validators.")
         return
-        # validators = [d for d in online_devices_list if d.role == "validator"]
-        # random.shuffle(validators)
-        # for validator in validators:
-        #     if validator.is_online():
-        #         validator.associate_with_worker(self)
-        #         self._associated_validators.add(validator)
-        #         print(f"{self.role} {self.idx} has broadcasted to validators {[v.idx for v in self._associated_validators]}")
-
    
     ''' Validators' Methods '''
 
@@ -522,7 +527,7 @@ class Device():
             return True
         # create mask object in-place
         produce_mask_from_model(self._final_global_model)
-        pruned_amount = get_prune_summary(model=self._final_global_model, name='weight')['global'] # prune_rate = 0s/total_params = 1 - sparsity
+        pruned_amount = get_prune_summary(model=self._final_global_model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
         init_pruned_amount = pruned_amount
         last_pruned_model = copy_model(self._final_global_model, self.args.dev_device)
         while True:
@@ -547,12 +552,12 @@ class Device():
             accs.append(model_acc)
             last_pruned_model = copy_model(pruned_model, self.args.dev_device)
 
-        after_pruning_rate = get_pruned_amount_by_mask(self.final_ticket_model) # prune_rate = 0s/total_params = 1 - sparsity
+        after_pruned_amount = get_pruned_amount_by_mask(self.final_ticket_model) # pruned_amount = 0s/total_params = 1 - sparsity
         after_pruning_acc = self.eval_model_by_train(self.final_ticket_model)
 
-        print(f"Model sparsity: {1 - after_pruning_rate:.2f}")
+        print(f"Model sparsity: {1 - after_pruned_amount:.2f}")
         print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
-        print(f"Pruned amount: {after_pruning_rate - init_pruned_amount:.2f}")
+        print(f"Pruned amount: {after_pruned_amount - init_pruned_amount:.2f}")
 
         if self._is_malicious:
             self.poison_model(self.final_ticket_model)
