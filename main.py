@@ -139,7 +139,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.init(mode="disabled")
+    # wandb.init(mode="disabled")
     wandb.run.name = log_root_name
     wandb.config.update(args)
     
