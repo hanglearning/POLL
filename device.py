@@ -107,7 +107,7 @@ class Device():
 
     def flip_labels(self):
         # Access the underlying dataset
-        self._train_loader.dataset.targets = 10 - self._train_loader.dataset.targets
+        self._train_loader.dataset.targets = 9 - self._train_loader.dataset.targets
 
 
 

@@ -70,7 +70,7 @@ parser.add_argument('--dataset_mode', type=str,default='non-iid', help='non-iid|
 parser.add_argument('--rate_unbalance', type=float, default=1.0, help='unbalance between labels')
 parser.add_argument('--dataloader_workers', type=int, default=0, help='num of pytorch dataloader workers')
 parser.add_argument('--batch_size', type=int, default=10)
-parser.add_argument('--comm_rounds', type=int, default=50)
+parser.add_argument('--comm_rounds', type=int, default=25)
 parser.add_argument('--epochs', type=int, default=500, help="local max training epochs to get the max accuracy")
 parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
@@ -86,7 +86,7 @@ parser.add_argument('--pass_all_models', type=int, default=0, help='turn off val
 parser.add_argument('--validate_center_threshold', type=float, default=0.1, help='only recognize malicious devices if the difference of two centers of KMeans exceed this threshold')
 
 ####################### attack setting #######################
-parser.add_argument('--attack_type', type=int, default=2, help='0 - no attack, 1 - model poisoning attack, 2 - label flipping attack, 3 - lazy attack')
+parser.add_argument('--attack_type', type=int, default=0, help='0 - no attack, 1 - model poisoning attack, 2 - label flipping attack, 3 - lazy attack')
 
 ####################### pruning setting #######################
 parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model parameters before training")
@@ -124,7 +124,7 @@ def main():
     print(f"Using device {args.dev_device}")
 
     exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
-    log_root_name = f"seed_{args.seed}_{exe_date_time}_epochs_{args.epochs}_mal_{args.n_malicious}_noise_{args.noise_variance}"
+    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}"
 
     try:
         # on Google Colab with Google Drive mounted
@@ -249,6 +249,7 @@ def main():
         else:
             n_validators = int(args.n_validators)
         print(f"Round {comm_round}, {n_validators} validators selected.")
+        wandb.log({"comm_round": comm_round, "n_validators": n_validators})
 
         online_validators = []
         random.shuffle(online_workers)
