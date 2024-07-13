@@ -398,21 +398,23 @@ class Device():
         # based on the euclidean distance, decide if the worker is benigh or not by kmeans = 2
         kmeans = KMeans(n_clusters=2, random_state=0)
         worker_eds = list(worker_to_ed.values())
-        kmeans.fit(np.array(worker_eds).reshape(-1,1))
-        labels = list(kmeans.labels_)
-        center0 = kmeans.cluster_centers_[0]
-        center1 = kmeans.cluster_centers_[1]
-
         benigh_center_group = -1
-        if center1 - center0 > self.args.validate_center_threshold:
-            benigh_center_group = 0
-        elif center0 - center1 > self.args.validate_center_threshold:
-            benigh_center_group = 1
+        if len(worker_eds) > 1:
+            kmeans.fit(np.array(worker_eds).reshape(-1,1))
+            labels = list(kmeans.labels_)
+            center0 = kmeans.cluster_centers_[0]
+            center1 = kmeans.cluster_centers_[1]
+
+            if center1 - center0 > self.args.validate_center_threshold:
+                benigh_center_group = 0
+            elif center0 - center1 > self.args.validate_center_threshold:
+                benigh_center_group = 1
         
         workers_in_order = list(worker_to_ed.keys())
         for worker_iter in range(len(workers_in_order)):
             worker_idx = workers_in_order[worker_iter]
             if benigh_center_group == -1:
+                # treat all workers as benigh
                 self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
             else:
                 if labels[worker_iter] == benigh_center_group:
