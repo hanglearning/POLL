@@ -263,7 +263,7 @@ class Device():
         print(f"Pruned amount: {after_pruned_amount - before_pruned_amount:.2f}")
 
         wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_sparsity": 1 - after_pruned_amount, "comm_round": comm_round})
-        wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_acc": after_pruning_acc, "comm_round": comm_round})
+        wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_training_acc": after_pruning_acc, "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_local_test_acc": self.eval_model_by_local_test(self.model), "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_global_test_acc": self.eval_model_by_global_test(self.model), "comm_round": comm_round})
   
