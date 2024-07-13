@@ -561,7 +561,7 @@ class Device():
         print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
         print(f"Pruned amount: {after_pruned_amount - init_pruned_amount:.2f}")
 
-        if self._is_malicious:
+        if self._is_malicious and self.args.attack_type == 1:
             self.poison_model(self.final_ticket_model)
             poinsoned_acc = self.eval_model_by_train(self.final_ticket_model)
             accs.append(poinsoned_acc)
