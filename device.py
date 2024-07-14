@@ -603,12 +603,13 @@ class Device():
         self._pouw_book = {key: 0 for key in idx_to_device.keys()}
 
     def set_online(self):
-        curr_sparsity = 1 - get_pruned_amount_by_weights(self.model)
-        if curr_sparsity <= self.args.target_sparsity and self.max_model_acc >= self.args.target_acc:
-            print(f"Device {self.idx}'s current sparsity {curr_sparsity} with acc {self.max_model_acc}, offline.")
-            self.online = False
-        else:
-            self.online = random.random() <= self.args.network_stability
+        # curr_sparsity = 1 - get_pruned_amount_by_weights(self.model)
+        # if curr_sparsity <= self.args.target_sparsity and self.max_model_acc >= self.args.target_acc:
+        #     print(f"Device {self.idx}'s current sparsity {curr_sparsity} with acc {self.max_model_acc}, offline.")
+        #     self.online = False
+        # else:
+        ''' 7/13/24 Removed the sparsity and accuracy check for online status since the those devices' network may still help strugglers '''
+        self.online = random.random() <= self.args.network_stability
         return self.online
     
     def is_online(self):
