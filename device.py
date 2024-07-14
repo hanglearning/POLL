@@ -167,6 +167,7 @@ class Device():
 
 
         print(f"Worker {self.idx} trained for {epoch} epochs with max training acc {max_acc} arrived at epoch {max_model_epoch}.")
+        wandb.log({f"{self.idx}_{self._user_labels}_training_max_epoch": max_model_epoch, "comm_round": comm_round})
 
         self.model = max_model
         self.max_model_acc = max_acc
