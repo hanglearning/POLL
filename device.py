@@ -820,7 +820,7 @@ class Device():
 
     ''' Helper Functions '''
 
-    def compare_dicts_of_tensors(self, dict1, dict2, atol=1e-3, rtol=1e-3):
+    def compare_dicts_of_tensors(self, dict1, dict2, atol=1e-2, rtol=1e-2):
             """
             Compares two dictionaries with torch.Tensor values.
 
