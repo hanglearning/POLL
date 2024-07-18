@@ -48,16 +48,20 @@ models = {
 
 parser = argparse.ArgumentParser(description='VBFL2')
 
+####################### wandb setting #######################
+
+parser.add_argument('--wandb_enable', type=int, default=0, help= '0 to disable logging, 1 to enable wandb logging')
+parser.add_argument('--wandb_username', type=str, default=None)
+parser.add_argument('--wandb_project', type=str, default=None)
+parser.add_argument('--run_note', type=str, default=None)
+
 ####################### system setting #######################
 parser.add_argument('--train_verbose', type=bool, default=False)
 parser.add_argument('--test_verbose', type=bool, default=False)
 parser.add_argument('--prune_verbose', type=bool, default=False)
 parser.add_argument('--resync_verbose', type=bool, default=True)
 parser.add_argument('--seed', type=int, default=40)
-parser.add_argument('--wandb_username', type=str, default=None)
-parser.add_argument('--wandb_project', type=str, default=None)
-parser.add_argument('--run_note', type=str, default=None)
-parser.add_argument('--debug_validation', type=int, default=1, help='show validation process detail')
+parser.add_argument('--debug_validation', type=int, default=0, help='show validation process detail')
 parser.add_argument('--log_dir', type=str, default="./logs")
 parser.add_argument('--aio', type=int, default=1, help='All-in-one mode, if set to 1, it indicates that all devices treat all others as peers. If set to 0, peers are assigned randomly.')
 parser.add_argument('--peer_percent', type=float, default=0.7, help='if aio 0, this indicates the percentage of peers to assign. See assign_peers() in device.py')
@@ -90,9 +94,10 @@ parser.add_argument('--attack_type', type=int, default=0, help='0 - no attack, 1
 
 ####################### pruning setting #######################
 parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model parameters before training")
-parser.add_argument('--target_sparsity', type=float, default=0.2)
+parser.add_argument('--target_sparsity', type=float, default=0.1, help='target sparsity for pruning, stop pruning if below this threshold')
 parser.add_argument('--prune_step', type=float, default=0.05, help='increment of pruning step')
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
+parser.add_argument('--pre_prune_threshold', type=float, default=0.8, help="global model's initial accuracy should exceed this threshold to do pre-pruning")
 
 
 ####################### blockchain setting #######################
@@ -139,7 +144,8 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    wandb.init(mode="disabled")
+    if not args.wandb_enable:
+        wandb.init(mode="disabled")
     wandb.run.name = log_root_name
     wandb.config.update(args)
     

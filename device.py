@@ -110,19 +110,20 @@ class Device():
         self._train_loader.dataset.targets = 9 - self._train_loader.dataset.targets
 
     def pre_prune(self, comm_round):
-        # prune the global model before training for training efficiency
-        if comm_round == 1:
-            return
+        # prune the global model before training for training efficiency, since the global model is an aggregation of all local models and may not suit the worker's local model perfectly
         
         wandb.log({f"{self.idx}_{self._user_labels}_global_test_acc": self.eval_model_by_global_test(self.model), "comm_round": comm_round})
-
-        print()
-        L_or_M = "M" if self._is_malicious else "L"
-        print(f"\n---------- {L_or_M} Worker:{self.idx} pre pruning ---------------------")
 
         # prune to as long as accuracy drops
         init_model_acc = self.eval_model_by_train(self.model)
         accs = [init_model_acc]
+
+        if init_model_acc < self.args.pre_prune_threshold:
+            return
+        
+        print()
+        L_or_M = "M" if self._is_malicious else "L"
+        print(f"\n---------- {L_or_M} Worker:{self.idx} pre pruning ---------------------")
 
         def is_decreasing(arr, check_last_n=2):
             if len(arr) < check_last_n:
@@ -148,8 +149,8 @@ class Device():
             
             model_acc = self.eval_model_by_train(pruned_model)
 
-            # prune until accuracy starts to decline
-            if is_decreasing(accs):
+            # prune until accuracy starts to decline or below the target sparsity
+            if is_decreasing(accs) or 1 - pruned_amount <= self.args.target_sparsity:
                 self.model = copy_model(last_pruned_model, self.args.dev_device)
                 break
             
@@ -277,7 +278,7 @@ class Device():
             
             model_acc = self.eval_model_by_train(pruned_model)
 
-            # prune until the accuracy drop exceeds the threshold
+            # prune until the accuracy drop exceeds the threshold or below the target sparsity
             if init_model_acc - model_acc > self.args.prune_acc_drop_threshold or 1 - pruned_amount <= self.args.target_sparsity:
                 # revert to the last pruned model
                 # print("pruned amount", pruned_amount, "target_sparsity", self.args.target_sparsity)
@@ -349,7 +350,8 @@ class Device():
             if worker == self:
                 continue
             if self.verify_tx_sig(worker._worker_tx):
-                print(f"Validator {self.idx} has received and verified the signature of the tx from worker {worker.idx}.")
+                if self.args.debug_validation:
+                    print(f"Validator {self.idx} has received and verified the signature of the tx from worker {worker.idx}.")
                 self._verified_worker_txs[worker.idx] = worker._worker_tx
             else:
                 print(f"Signature of tx from worker {worker['idx']} is invalid.")
@@ -359,7 +361,8 @@ class Device():
             if validator == self:
                 continue
             if self.verify_tx_sig(validator._validator_tx):
-                print(f"Validator {self.idx} has received and verified the signature of the tx from validator {validator.idx}.")
+                if self.args.debug_validation:
+                    print(f"Validator {self.idx} has received and verified the signature of the tx from validator {validator.idx}.")
                 self._verified_validator_txs[validator.idx] = validator._validator_tx
             else:
                 print(f"Signature of tx from worker {validator['idx']} is invalid.")
@@ -380,8 +383,9 @@ class Device():
                   and self.compare_dicts_of_tensors(wtx['model_sig_col'], worker_layer_to_model_sig_col)\
                   and self.verify_msg(wtx['model_sig_row'], worker_model_sig_row_sig, worker_rsa['pub_key'], worker_rsa['modulus'])\
                   and self.verify_msg(wtx['model_sig_col'], worker_model_sig_col_sig, worker_rsa['pub_key'], worker_rsa['modulus']):
-                  
-                print(f"Worker {widx} has valid model signature.")
+                
+                if self.args.debug_validation:
+                    print(f"Worker {widx} has valid model signature.")
             
                 self.worker_to_model_sig[widx] = {'model_sig_row': wtx['model_sig_row'], 'model_sig_row_sig': wtx['model_sig_row_sig'], 'model_sig_col': wtx['model_sig_col'], 'model_sig_col_sig': wtx['model_sig_col_sig'], 'worker_rsa': worker_rsa}
         
@@ -816,7 +820,7 @@ class Device():
 
     ''' Helper Functions '''
 
-    def compare_dicts_of_tensors(self, dict1, dict2, atol=1e-8, rtol=1e-5):
+    def compare_dicts_of_tensors(self, dict1, dict2, atol=1e-3, rtol=1e-3):
             """
             Compares two dictionaries with torch.Tensor values.
 
