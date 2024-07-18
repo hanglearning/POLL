@@ -45,7 +45,7 @@ class Device():
         self.peers = set()
         self.blockchain = Blockchain()
         self._received_blocks = {}
-        self._resync_to = None # record the last round's picked winning validator to resync chain
+        self._resync_to = idx # record the last round's picked winning validator to resync chain, default to itself
         
         # for workers
         self._worker_tx = None
@@ -109,7 +109,59 @@ class Device():
         # Access the underlying dataset
         self._train_loader.dataset.targets = 9 - self._train_loader.dataset.targets
 
+    def pre_prune(self, comm_round):
+        # prune the global model before training for training efficiency
+        if comm_round == 1:
+            return
+        
+        wandb.log({f"{self.idx}_{self._user_labels}_global_test_acc": self.eval_model_by_global_test(self.model), "comm_round": comm_round})
 
+        print()
+        L_or_M = "M" if self._is_malicious else "L"
+        print(f"\n---------- {L_or_M} Worker:{self.idx} pre pruning ---------------------")
+
+        # prune to as long as accuracy drops
+        init_model_acc = self.eval_model_by_train(self.model)
+        accs = [init_model_acc]
+
+        def is_decreasing(arr, check_last_n=2):
+            if len(arr) < check_last_n:
+                return False
+
+            for i in range(-check_last_n, -1):
+                if arr[i] <= arr[i + 1]:
+                    return False
+
+            return True
+        # create mask object in-place
+        produce_mask_from_model(self.model)
+        pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
+        init_pruned_amount = pruned_amount
+        last_pruned_model = copy_model(self.model, self.args.dev_device)
+        while True:
+            pruned_amount += self.args.prune_step
+            pruned_model = copy_model(self.model, self.args.dev_device)
+            l1_prune(model=pruned_model,
+                        amount=pruned_amount,
+                        name='weight',
+                        verbose=self.args.prune_verbose)
+            
+            model_acc = self.eval_model_by_train(pruned_model)
+
+            # prune until accuracy starts to decline
+            if is_decreasing(accs):
+                self.model = copy_model(last_pruned_model, self.args.dev_device)
+                break
+            
+            accs.append(model_acc)
+            last_pruned_model = copy_model(pruned_model, self.args.dev_device)
+
+        after_pruned_amount = get_pruned_amount_by_mask(last_pruned_model) # pruned_amount = 0s/total_params = 1 - sparsity
+        after_pruning_acc = self.eval_model_by_train(last_pruned_model)
+
+        print(f"After pre-prune, model sparsity becomes: {1 - after_pruned_amount:.2f}")
+        print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
+        print(f"Pruned amount: {after_pruned_amount - init_pruned_amount:.2f}")
 
     def model_learning_max(self, comm_round):
         
@@ -185,9 +237,8 @@ class Device():
         wandb.log({f"{self.idx}_{self._user_labels}_trained_model_sparsity": 1 - get_pruned_amount_by_mask(self.model), "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_max_local_training_acc": self.max_model_acc, "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_local_test_acc": self.eval_model_by_local_test(self.model), "comm_round": comm_round})
-        wandb.log({f"{self.idx}_{self._user_labels}_global_test_acc": self.eval_model_by_global_test(self.model), "comm_round": comm_round})
 
-    def prune_model(self, comm_round):
+    def post_prune(self, comm_round):
         
         print()
         L_or_M = "M" if self._is_malicious else "L"
@@ -226,24 +277,6 @@ class Device():
             
             model_acc = self.eval_model_by_train(pruned_model)
 
-            # print("Intermediate pruned model accuracy", model_acc)
-
-            # (1) prune until accuracy starts to decline
-            # if len(model_weights) > 1:
-            #     model_weights.popleft()
-
-            #     # Check convergence
-            #     if is_decreasing(accs):
-            #         break
-
-            
-            # (2) prune until the accuracy increases - abandoned, prune is the first priority
-            # if model_acc > accs[-1]:
-            #     # use the current model
-            #     self.model = copy_model(pruned_model, self.args.dev_device)
-            #     self.max_model_acc = model_acc
-            #     break
-            
             # prune until the accuracy drop exceeds the threshold
             if init_model_acc - model_acc > self.args.prune_acc_drop_threshold or 1 - pruned_amount <= self.args.target_sparsity:
                 # revert to the last pruned model
@@ -284,6 +317,7 @@ class Device():
 
     def generate_model_sig(self):
         
+        make_prune_permanent(self.model)
         # zero knowledge proof of model ownership
         self.layer_to_model_sig_row, self.layer_to_model_sig_col = sum_over_model_params(self.model)
         
@@ -292,7 +326,7 @@ class Device():
         worker_tx = {
             'worker_idx' : self.idx,
             'rsa_pub_key': self.return_rsa_pub_key(),
-            'model' : make_prune_permanent(self.model),
+            'model' : self.model,
             # 'model_path' : self.last_local_model_path, # in reality could be IPFS
             'model_sig_row': self.layer_to_model_sig_row,
             'model_sig_col': self.layer_to_model_sig_col
@@ -334,27 +368,6 @@ class Device():
     def validate_models(self, comm_round, idx_to_device):
         # at this moment, both models have no mask objects, and may or may not have been pruned
 
-        def compare_dicts_of_tensors(dict1, dict2, atol=1e-8, rtol=1e-5):
-            """
-            Compares two dictionaries with torch.Tensor values.
-
-            Parameters:
-            - dict1, dict2: The dictionaries to compare.
-            - atol: Absolute tolerance.
-            - rtol: Relative tolerance.
-
-            Returns:
-            - True if the dictionaries are equivalent, False otherwise.
-            """
-            if dict1.keys() != dict2.keys():
-                return False
-            
-            for key in dict1:
-                if not torch.allclose(dict1[key], dict2[key], atol=atol, rtol=rtol):
-                    return False
-            
-            return True
-
         # validate model siganture
         for widx, wtx in self._verified_worker_txs.items():
             worker_model = wtx['model']
@@ -363,15 +376,18 @@ class Device():
             worker_rsa = wtx['rsa_pub_key']
 
             worker_layer_to_model_sig_row, worker_layer_to_model_sig_col = sum_over_model_params(worker_model)
-            if compare_dicts_of_tensors(wtx['model_sig_row'], worker_layer_to_model_sig_row)\
-                  and compare_dicts_of_tensors(wtx['model_sig_col'], worker_layer_to_model_sig_col)\
+            if self.compare_dicts_of_tensors(wtx['model_sig_row'], worker_layer_to_model_sig_row)\
+                  and self.compare_dicts_of_tensors(wtx['model_sig_col'], worker_layer_to_model_sig_col)\
                   and self.verify_msg(wtx['model_sig_row'], worker_model_sig_row_sig, worker_rsa['pub_key'], worker_rsa['modulus'])\
                   and self.verify_msg(wtx['model_sig_col'], worker_model_sig_col_sig, worker_rsa['pub_key'], worker_rsa['modulus']):
                   
                 print(f"Worker {widx} has valid model signature.")
             
-                self.worker_to_model_sig[widx] = (wtx['model_sig_row'], wtx['model_sig_row_sig'], wtx['model_sig_col'], wtx['model_sig_col_sig'], worker_rsa)
+                self.worker_to_model_sig[widx] = {'model_sig_row': wtx['model_sig_row'], 'model_sig_row_sig': wtx['model_sig_row_sig'], 'model_sig_col': wtx['model_sig_col'], 'model_sig_col_sig': wtx['model_sig_col_sig'], 'worker_rsa': worker_rsa}
         
+        # add its own model signature
+        self.worker_to_model_sig[self.idx] = {'model_sig_row': self.layer_to_model_sig_row, 'model_sig_row_sig': self.sign_msg(str(self.layer_to_model_sig_row)), 'model_sig_col': self.layer_to_model_sig_col, 'model_sig_col_sig': self.sign_msg(str(self.layer_to_model_sig_col)), 'worker_rsa': self.return_rsa_pub_key()}
+           
         # get validator's weights
         validator_layer_to_weights = get_trainable_model_weights(self.model)
        
@@ -419,9 +435,16 @@ class Device():
                 self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
             else:
                 if labels[worker_iter] == benigh_center_group:
-                    self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
+                    # malicious validator's behaviors - flip acc
+                    if not self._is_malicious:
+                        self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
+                    else:
+                        self.malicious_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
                 else:
-                    self.malicious_worker_to_acc[worker_idx] = worker_to_acc[worker_idx] 
+                    if not self._is_malicious:
+                        self.malicious_worker_to_acc[worker_idx] = worker_to_acc[worker_idx] 
+                    else:
+                        self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
 
     def make_validator_tx(self):
          
@@ -470,7 +493,7 @@ class Device():
         worker_idx_to_votes = defaultdict(int)
         for validator_idx, validator_tx in self._verified_validator_txs.items():
             for worker_idx in validator_tx['benigh_worker_to_acc'].keys():
-                worker_idx_to_votes[worker_idx] += 1 * (pouw_ranks[validator_idx] / len(pouw_ranks))
+                worker_idx_to_votes[worker_idx] += 1 * (pouw_ranks[validator_idx] / len(pouw_ranks)) # malicious validator's voting power should be degraded
             for worker_idx in validator_tx['malicious_worker_to_acc'].keys():
                 worker_idx_to_votes[worker_idx] += -1 * (pouw_ranks[validator_idx] / len(pouw_ranks))
         
@@ -484,17 +507,18 @@ class Device():
         # select local models if their votes > 0 for FedAvg, normalize acc by worker's historical pouw to avoid zero validated acc
         acc_weight_to_benigh_models = {}
         for worker_idx, votes in worker_idx_to_votes.items():
-            # malicious validator's behaviors - flip votes and acc
-            if worker_idx in self._verified_worker_txs and ((votes < 0 and self._is_malicious) or (votes > 0 and not self._is_malicious)):
+            if worker_idx in self._verified_worker_txs and votes > 0:
                 worker_acc = self.benigh_worker_to_acc[worker_idx] if worker_idx in self.benigh_worker_to_acc else self.malicious_worker_to_acc[worker_idx]
-                if self._is_malicious:
-                    worker_acc = 1 - worker_acc
                 # tanh normalize, a bit complicated
                 # normalized_accuracy_weight = float(torch.tanh(torch.tensor(worker_acc + self._pouw_book[worker_idx], device=self.args.dev_device)))
                 acc_plus_historical = worker_acc + self._pouw_book[worker_idx]
                 acc_weight_to_benigh_models[acc_plus_historical] = self._verified_worker_txs[worker_idx]['model'] # may be wanna try add rank as well, otherwise some benigh models may have weight acc:0 + historical:0 = 0
                 # reward the workers by self tested accuracy (not granted yet)
                 self._device_to_ungranted_uw[worker_idx] = worker_acc
+                print(f"Worker {worker_idx}'s model is selected by validator {self.idx} for aggregation.")
+            else:
+                if worker_idx != self.idx:
+                    print(f"Worker {worker_idx}'s model is not selected by validator {self.idx}.")
 
         # add its own model
         acc_weight_to_benigh_models[self.max_model_acc + self._pouw_book[self.idx]] = self.model
@@ -507,66 +531,7 @@ class Device():
         self._final_global_model = weighted_fedavg(acc_weight_to_benigh_models, device=self.args.dev_device)
 
         # prune until accuracy decreases
-        self.validator_post_prune()
-
-    def validator_post_prune(self):
-        
-        print()
-        L_or_M = "M" if self._is_malicious else "L"
-        print(f"\n---------- {L_or_M} Validator:{self.idx} post pruning ---------------------")
-
-        # same logic as in prune_modle - prune until acc drop exceeds threshold
-        init_model_acc = self.eval_model_by_train(self._final_global_model)
-        accs = [init_model_acc]
-
-        def is_decreasing(arr, check_last_n=2):
-            if len(arr) < check_last_n:
-                return False
-
-            for i in range(-check_last_n, -1):
-                if arr[i] <= arr[i + 1]:
-                    return False
-
-            return True
-        # create mask object in-place
-        produce_mask_from_model(self._final_global_model)
-        pruned_amount = get_prune_summary(model=self._final_global_model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
-        init_pruned_amount = pruned_amount
-        last_pruned_model = copy_model(self._final_global_model, self.args.dev_device)
-        while True:
-            pruned_amount += self.args.prune_step
-            pruned_model = copy_model(self._final_global_model, self.args.dev_device)
-            l1_prune(model=pruned_model,
-                        amount=pruned_amount,
-                        name='weight',
-                        verbose=self.args.prune_verbose)
-            
-            model_acc = self.eval_model_by_train(pruned_model)
-            
-            # prune until the accuracy drop exceeds the threshold
-            if init_model_acc - model_acc > self.args.prune_acc_drop_threshold or 1 - pruned_amount <= self.args.target_sparsity:
-                # revert to the last pruned model
-                # print("pruned amount", pruned_amount, "target_sparsity", self.args.target_sparsity)
-                # print(f"init_model_acc - model_acc: {init_model_acc- model_acc} > self.args.prune_acc_drop_threshold: {self.args.prune_acc_drop_threshold}")
-                self.final_ticket_model = copy_model(last_pruned_model, self.args.dev_device)
-                self.max_model_acc = accs[-1]
-                break
-            
-            accs.append(model_acc)
-            last_pruned_model = copy_model(pruned_model, self.args.dev_device)
-
-        after_pruned_amount = get_pruned_amount_by_mask(self.final_ticket_model) # pruned_amount = 0s/total_params = 1 - sparsity
-        after_pruning_acc = self.eval_model_by_train(self.final_ticket_model)
-
-        print(f"Model sparsity: {1 - after_pruned_amount:.2f}")
-        print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
-        print(f"Pruned amount: {after_pruned_amount - init_pruned_amount:.2f}")
-
-        if self._is_malicious and self.args.attack_type == 1:
-            self.poison_model(self.final_ticket_model)
-            poinsoned_acc = self.eval_model_by_train(self.final_ticket_model)
-            accs.append(poinsoned_acc)
-            print(f'Poisoned accuracy: {poinsoned_acc}, decreased {after_pruning_acc - poinsoned_acc}.')
+        # self.validator_post_prune() - to cope with the model signature verification. moved to let workers do pre-prune
 
     def produce_block(self):
         
@@ -575,7 +540,7 @@ class Device():
       
         last_block_hash = self.blockchain.get_last_block_hash()
 
-        block = Block(last_block_hash, self.final_ticket_model, self._device_to_ungranted_uw, self.idx, self.worker_to_model_sig, self.return_rsa_pub_key())
+        block = Block(last_block_hash, self._final_global_model, self._device_to_ungranted_uw, self.idx, self.worker_to_model_sig, self.return_rsa_pub_key())
         sign_block(block)
 
         self.produced_block = block
@@ -794,12 +759,40 @@ class Device():
         return False
 
     def verify_winning_block(self, winning_block):
+        # block signature check in pick_wining_block()
         # check last block hash match
         if not self.check_last_block_hash_match(winning_block):
             print(f"{self.role} {self.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain in next round.")
             self._resync_to = winning_block.produced_by
             return False
-        # block checked
+        
+        ''' validate model signature to make sure the validator is performing model aggregation honestly '''
+        layer_to_model_sig_row, layer_to_model_sig_col = sum_over_model_params(winning_block.global_model_in_block)
+        worker_to_acc_weight = defaultdict(float)
+        for worker_idx, uw, in winning_block.worker_to_uw.items():
+            worker_to_acc_weight[worker_idx] = uw + self._pouw_book[worker_idx]
+
+        # normalize weights (again) to between 0 and 1
+        worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
+        
+        # apply weights to worker's model signatures
+        workers_layer_to_model_sig_row = {}
+        workers_layer_to_model_sig_col = {}
+        for worker_idx, acc_weight in worker_to_acc_weight.items():
+            model_sig_row = winning_block.worker_to_model_sig[worker_idx]['model_sig_row']
+            model_sig_col = winning_block.worker_to_model_sig[worker_idx]['model_sig_col']
+            for layer in model_sig_row:
+                if layer not in workers_layer_to_model_sig_row:
+                    workers_layer_to_model_sig_row[layer] = model_sig_row[layer] * acc_weight
+                    workers_layer_to_model_sig_col[layer] = model_sig_col[layer] * acc_weight
+                else:
+                    workers_layer_to_model_sig_row[layer] += model_sig_row[layer] * acc_weight
+                    workers_layer_to_model_sig_col[layer] += model_sig_col[layer] * acc_weight
+        
+        if not self.compare_dicts_of_tensors(layer_to_model_sig_row, workers_layer_to_model_sig_row) or not self.compare_dicts_of_tensors(layer_to_model_sig_col, workers_layer_to_model_sig_col):
+            print(f"{self.role} {self.idx}'s winning block has invalid workers' model signatures.")
+            return False
+
         return True
         
     def append_and_process_block(self, winning_block, comm_round):
@@ -822,6 +815,28 @@ class Device():
         self.save_model_weights_to_log(comm_round, 0, global_model=True)
 
     ''' Helper Functions '''
+
+    def compare_dicts_of_tensors(self, dict1, dict2, atol=1e-8, rtol=1e-5):
+            """
+            Compares two dictionaries with torch.Tensor values.
+
+            Parameters:
+            - dict1, dict2: The dictionaries to compare.
+            - atol: Absolute tolerance.
+            - rtol: Relative tolerance.
+
+            Returns:
+            - True if the dictionaries are equivalent, False otherwise.
+            """
+            if dict1.keys() != dict2.keys():
+                return False
+            
+            for key in dict1:
+                if not torch.allclose(dict1[key], dict2[key], atol=atol, rtol=rtol):
+                    return False
+            
+            return True
+    
     def check_validation_performance(self, block, idx_to_device, comm_round):
         incorrect_pos = 0
         incorrect_neg = 0

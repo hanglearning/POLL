@@ -139,7 +139,7 @@ def main():
     ######## setup wandb ########
     wandb.login()
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
-    # wandb.init(mode="disabled")
+    wandb.init(mode="disabled")
     wandb.run.name = log_root_name
     wandb.config.update(args)
     
@@ -209,7 +209,6 @@ def main():
             # validators
             device._verified_worker_txs = {}
             device._final_global_model = None
-            device.final_ticket_model = None
             device.produced_block = None            
             device.benigh_worker_to_acc = {}
             device.malicious_worker_to_acc = {}
@@ -231,10 +230,12 @@ def main():
             # resync chain
             if worker.resync_chain(comm_round, idx_to_device, init_online_devices):
                 worker.post_resync()
+            # perform pre-training-pruning
+            worker.pre_prune(comm_round)
             # perform training
             worker.model_learning_max(comm_round)
-            # perform pruning
-            worker.prune_model(comm_round)
+            # perform post-training-pruning
+            worker.post_prune(comm_round)
             # generate model signature
             worker.generate_model_sig()
             # make tx

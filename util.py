@@ -327,15 +327,20 @@ def sum_over_model_params(model):
     layer_to_model_sig_row = {}
     layer_to_model_sig_col = {}
 
+    row_dim, col_dim = -1, -1
     for layer, module in model.named_children():
+        if 'conv' in layer:
+            row_dim, col_dim = 2, 3
+        elif 'fc' in layer:
+            row_dim, col_dim = 1, 0
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
                 if weight_params.is_cuda:
-                    layer_to_model_sig_row[layer] = torch.sum(weight_params.cpu(), dim=1)
-                    layer_to_model_sig_col[layer] = torch.sum(weight_params.cpu(), dim=0)
+                    layer_to_model_sig_row[layer] = torch.sum(weight_params.cpu(), dim=row_dim)
+                    layer_to_model_sig_col[layer] = torch.sum(weight_params.cpu(), dim=col_dim)
                 else:
-                    layer_to_model_sig_row[layer] = torch.sum(weight_params, dim=1)
-                    layer_to_model_sig_col[layer] = torch.sum(weight_params, dim=0)
+                    layer_to_model_sig_row[layer] = torch.sum(weight_params, dim=row_dim)
+                    layer_to_model_sig_col[layer] = torch.sum(weight_params, dim=col_dim)
 
     return layer_to_model_sig_row, layer_to_model_sig_col
 
