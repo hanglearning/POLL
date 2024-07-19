@@ -106,6 +106,8 @@ parser.add_argument('--check_signature', type=int, default=0,
                     help='if set to 0, all signatures are assumed to be verified to save execution time')
 parser.add_argument('--network_stability', type=float, default=1.0, 
                     help='the odds a device can be reached')
+parser.add_argument('--malicious_always_online', type=int, default=1, 
+                    help='1 - malicious devices are always online; 0 - malicious devices can be online or offline depending on network_stability')
 
 ####################### debug setting #######################
 parser.add_argument('--model_save_freq', type=int, default=0, help='0 - never save, 1 - save every round, n - save every n rounds')

@@ -584,13 +584,13 @@ class Device():
         self.peers = self.peers.union(peers_of_other_device)
 
     def set_online(self):
-        # curr_sparsity = 1 - get_pruned_amount_by_weights(self.model)
-        # if curr_sparsity <= self.args.target_sparsity and self.max_model_acc >= self.args.target_acc:
-        #     print(f"Device {self.idx}'s current sparsity {curr_sparsity} with acc {self.max_model_acc}, offline.")
-        #     self.online = False
-        # else:
-        ''' 7/13/24 Removed the sparsity and accuracy check for online status since the those devices' network may still help strugglers '''
+        if self.args.malicious_always_online and self._is_malicious:
+            self.online = True
+            return True
+        
         self.online = random.random() <= self.args.network_stability
+        if not self.online:
+            print(f"Device {self.idx} is offline in this communication round.")
         return self.online
     
     def is_online(self):
