@@ -331,7 +331,7 @@ def main():
                 if len(blocks_produced_by) > 1:
                     forking = 1
                     break
-        wandb.log({"comm_round": comm_round, "forking_event": forking}, title="Forking Events")
+        wandb.log({"comm_round": comm_round, "forking_event": forking})
 
         ### record pouw book ###
         for device in devices_list:
