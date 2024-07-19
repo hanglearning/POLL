@@ -831,9 +831,9 @@ class Device():
         # used to record if a block is produced by a malicious device
         self.has_appended_block = True
         # update global model
-        self.model = deepcopy(block.global_model_in_block)
+        self.model = copy_model(block.global_model_in_block)
         # save global model weights and update path
-        self.save_model_weights_to_log(comm_round, 0, global_model=True)
+        # self.save_model_weights_to_log(comm_round, 0, global_model=True)
 
     ''' Helper Functions '''
 
