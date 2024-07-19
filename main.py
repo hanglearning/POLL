@@ -95,7 +95,7 @@ parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model p
 parser.add_argument('--target_sparsity', type=float, default=0.1, help='target sparsity for pruning, stop pruning if below this threshold')
 parser.add_argument('--prune_step', type=float, default=0.05, help='increment of pruning step')
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
-parser.add_argument('--pre_prune_threshold', type=float, default=0.8, help="global model's initial accuracy should exceed this threshold to do pre-pruning")
+parser.add_argument('--pre_prune_threshold', type=float, default=0.5, help="global model's initial accuracy should exceed this threshold to do pre-pruning")
 
 
 ####################### blockchain setting #######################
