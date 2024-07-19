@@ -206,7 +206,7 @@ def main():
             print(f"Total {len(init_online_devices)} device online, skip this round.")
             continue
 
-        wandb.log({"comm_round": comm_round, "forking_event": len(init_online_devices)})
+        wandb.log({"comm_round": comm_round, "n_online_devices": len(init_online_devices)})
 
         ''' reset params '''
         for device in init_online_devices:
