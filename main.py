@@ -203,7 +203,10 @@ def main():
         # devices exit the network if reaching target_sparsity and target_acc
         init_online_devices = [device for device in devices_list if device.set_online()]
         if len(init_online_devices) < 2:
-            sys.exit(f"Total {len(init_online_devices)} device online, end of simulation.")
+            print(f"Total {len(init_online_devices)} device online, skip this round.")
+            continue
+
+        wandb.log({"comm_round": comm_round, "forking_event": len(init_online_devices)}, title="Number of Online Devices")
 
         ''' reset params '''
         for device in init_online_devices:
@@ -321,9 +324,14 @@ def main():
         ''' Evaluation '''
         ### record forking events ###
         forking = 0
-        if len(set([d.blockchain.get_last_block().produced_by for d in online_workers])) != 1:
-            forking = 1
-        wandb.log({"comm_round": comm_round, "forking_event": forking})
+        blocks_produced_by = set()
+        for device in online_workers:
+            if device.has_appended_block:
+                blocks_produced_by.add(device.blockchain.get_last_block().produced_by)
+                if len(blocks_produced_by) > 1:
+                    forking = 1
+                    break
+        wandb.log({"comm_round": comm_round, "forking_event": forking}, title="Forking Events")
 
         ### record pouw book ###
         for device in devices_list:
@@ -349,7 +357,7 @@ def main():
     with open(f'{args.log_dir}/malicious_winning_record.txt', 'a') as f:
         f.write(f'Total times: malicious_winning_count/{comm_round}\n')
     malicious_block_record = wandb.Table(data=malicious_block_record, columns = ["comm_round", "malicious_block"])
-    wandb.log({log_root_name : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Device Wins")})
+    wandb.log({log_root_name : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Devices' Blocks Won")})
 
         
 
