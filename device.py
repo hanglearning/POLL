@@ -120,6 +120,12 @@ class Device():
 
         if init_model_acc < self.args.pre_prune_threshold:
             return
+        # create mask object in-place
+        produce_mask_from_model(self.model)
+        pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
+        if 1 - pruned_amount <= self.args.target_sparsity:
+            print(f"Worker {self.idx}'s model at sparsity {1 - pruned_amount}, which is already <= the target sparsity. Skip pre-pruning.")
+            return
         
         print()
         L_or_M = "M" if self._is_malicious else "L"
@@ -134,9 +140,7 @@ class Device():
                     return False
 
             return True
-        # create mask object in-place
-        produce_mask_from_model(self.model)
-        pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
+        
         init_pruned_amount = pruned_amount
         last_pruned_model = copy_model(self.model, self.args.dev_device)
         while True:
@@ -240,6 +244,13 @@ class Device():
         wandb.log({f"{self.idx}_{self._user_labels}_local_test_acc": self.eval_model_by_local_test(self.model), "comm_round": comm_round})
 
     def post_prune(self, comm_round):
+
+        # model prune percentage
+        before_pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
+
+        if 1 - before_pruned_amount <= self.args.target_sparsity:
+            print(f"Worker {self.idx}'s model at sparsity {1 - before_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
+            return
         
         print()
         L_or_M = "M" if self._is_malicious else "L"
@@ -251,8 +262,6 @@ class Device():
         # models = deque([copy_model(self.model, self.args.dev_device)]) - used if want the model with the best accuracy arrived at an intermediate pruned amount
         # print("Initial pruned model accuracy", init_model_acc)
 
-        # model prune percentage
-        before_pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
         pruned_amount = before_pruned_amount
         
         def is_decreasing(arr, check_last_n=2):
