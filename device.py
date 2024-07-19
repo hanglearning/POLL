@@ -340,7 +340,6 @@ class Device():
     def broadcast_worker_tx(self, online_devices_list):
         # worker broadcast tx, imagine the tx is broadcasted to all devices volunterring to become validators
         # see receive_and_verify_worker_tx_sig()
-        print(f"Worker {self.idx} is broadcasting worker transaction to validators.")
         return
    
     ''' Validators' Methods '''
@@ -349,8 +348,11 @@ class Device():
         for worker in online_workers:
             if worker == self:
                 continue
+            if worker.idx not in self.peers:
+                continue
+            self.update_peers(worker.peers)
             if self.verify_tx_sig(worker._worker_tx):
-                if self.args.debug_validation:
+                if self.args.validation_verbose:
                     print(f"Validator {self.idx} has received and verified the signature of the tx from worker {worker.idx}.")
                 self._verified_worker_txs[worker.idx] = worker._worker_tx
             else:
@@ -360,8 +362,11 @@ class Device():
         for validator in online_validators:
             if validator == self:
                 continue
+            if validator.idx not in self.peers:
+                continue
+            self.update_peers(validator.peers)
             if self.verify_tx_sig(validator._validator_tx):
-                if self.args.debug_validation:
+                if self.args.validation_verbose:
                     print(f"Validator {self.idx} has received and verified the signature of the tx from validator {validator.idx}.")
                 self._verified_validator_txs[validator.idx] = validator._validator_tx
             else:
@@ -384,7 +389,7 @@ class Device():
                   and self.verify_msg(wtx['model_sig_row'], worker_model_sig_row_sig, worker_rsa['pub_key'], worker_rsa['modulus'])\
                   and self.verify_msg(wtx['model_sig_col'], worker_model_sig_col_sig, worker_rsa['pub_key'], worker_rsa['modulus']):
                 
-                if self.args.debug_validation:
+                if self.args.validation_verbose:
                     print(f"Worker {widx} has valid model signature.")
             
                 self.worker_to_model_sig[widx] = {'model_sig_row': wtx['model_sig_row'], 'model_sig_row_sig': wtx['model_sig_row_sig'], 'model_sig_col': wtx['model_sig_col'], 'model_sig_col_sig': wtx['model_sig_col_sig'], 'worker_rsa': worker_rsa}
@@ -462,7 +467,6 @@ class Device():
         self._validator_tx = validator_tx
 
     def broadcast_validator_tx(self, online_validators):
-        print(f"Validator {self.idx} is broadcasting validator transaction to other validators.")
         return
 
     def produce_global_model_and_reward(self, comm_round):
@@ -509,30 +513,39 @@ class Device():
         worker_idx_to_votes[self.idx] += 1
         
         # select local models if their votes > 0 for FedAvg, normalize acc by worker's historical pouw to avoid zero validated acc
-        acc_weight_to_benigh_models = {}
+        worker_to_acc_weight = {}
         for worker_idx, votes in worker_idx_to_votes.items():
             if worker_idx in self._verified_worker_txs and votes > 0:
                 worker_acc = self.benigh_worker_to_acc[worker_idx] if worker_idx in self.benigh_worker_to_acc else self.malicious_worker_to_acc[worker_idx]
                 # tanh normalize, a bit complicated
                 # normalized_accuracy_weight = float(torch.tanh(torch.tensor(worker_acc + self._pouw_book[worker_idx], device=self.args.dev_device)))
-                acc_plus_historical = worker_acc + self._pouw_book[worker_idx]
-                acc_weight_to_benigh_models[acc_plus_historical] = self._verified_worker_txs[worker_idx]['model'] # may be wanna try add rank as well, otherwise some benigh models may have weight acc:0 + historical:0 = 0
+                worker_to_acc_weight[worker_idx] = worker_acc + self._pouw_book[worker_idx]
                 # reward the workers by self tested accuracy (not granted yet)
                 self._device_to_ungranted_uw[worker_idx] = worker_acc
-                print(f"Worker {worker_idx}'s model is selected by validator {self.idx} for aggregation.")
+                # print(f"Worker {worker_idx}'s model is selected by validator {self.idx} for aggregation.")
             else:
                 if worker_idx != self.idx:
-                    print(f"Worker {worker_idx}'s model is not selected by validator {self.idx}.")
+                    if self.args.validation_verbose:
+                        print(f"Worker {worker_idx}'s model is not selected by validator {self.idx}.")
+        
+        # get models for aggregation
+        worker_to_model = {worker_idx: self._verified_worker_txs[worker_idx]['model'] for worker_idx in worker_to_acc_weight}
+
+        # only preserve model signature of selected models
+        self.worker_to_model_sig = {worker_idx: self.worker_to_model_sig[worker_idx] for worker_idx in worker_to_acc_weight}
 
         # add its own model
-        acc_weight_to_benigh_models[self.max_model_acc + self._pouw_book[self.idx]] = self.model
+        worker_to_acc_weight[self.idx] = self.max_model_acc + self._pouw_book[self.idx]
         self._device_to_ungranted_uw[self.idx] = self.max_model_acc
+        worker_to_model[self.idx] = self.model
+        self.worker_to_model_sig[self.idx] = {'model_sig_row': self.layer_to_model_sig_row, 'model_sig_row_sig': self.sign_msg(str(self.layer_to_model_sig_row)), 'model_sig_col': self.layer_to_model_sig_col, 'model_sig_col_sig': self.sign_msg(str(self.layer_to_model_sig_col)), 'worker_rsa': self.return_rsa_pub_key()}
 
-        # normalize weights (again) to between 0 and 1
-        acc_weight_to_benigh_models = {acc/sum(acc_weight_to_benigh_models.keys()): model for acc, model in acc_weight_to_benigh_models.items()}
+        # normalize weights to between 0 and 1
+        worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
+
 
         # produce final global model
-        self._final_global_model = weighted_fedavg(acc_weight_to_benigh_models, device=self.args.dev_device)
+        self._final_global_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
 
         # prune until accuracy decreases
         # self.validator_post_prune() - to cope with the model signature verification. moved to let workers do pre-prune
@@ -548,12 +561,10 @@ class Device():
         sign_block(block)
 
         self.produced_block = block
-
-        return block
         
-    def broadcast_block(self, v_idx, online_devices_list, block):
-        for device in online_devices_list:
-            device._received_blocks[v_idx] = block
+    def broadcast_block(self):
+        # see receive_blocks()
+        return
         
     ''' Blockchain Operations '''
         
@@ -564,13 +575,13 @@ class Device():
         self.public_key = keyPair.e
         
     def assign_peers(self, idx_to_device):
-        if self.args.aio:
-            self.peers = set(idx_to_device.values())
-        else:
-            peer_size = len(idx_to_device) * self.args.peer_percent
-            self.peers = set(random.sample(idx_to_device.values(), peer_size))
-        self.peers.remove(self)
+        peer_size = math.ceil(len(idx_to_device) * self.args.peer_percent)
+        self.peers = set(random.sample(list(idx_to_device.keys()), peer_size))
+        self.peers.remove(self.idx)
         self._pouw_book = {key: 0 for key in idx_to_device.keys()}
+
+    def update_peers(self, peers_of_other_device):
+        self.peers = self.peers.union(peers_of_other_device)
 
     def set_online(self):
         # curr_sparsity = 1 - get_pruned_amount_by_weights(self.model)
@@ -700,6 +711,12 @@ class Device():
         hashFromSignature = pow(signature, pub_key, modulus)
         return hash == hashFromSignature
     
+    def receive_blocks(self, online_validators):
+        for validator in online_validators:
+            if validator.idx in self.peers:
+                self.update_peers(validator.peers)
+                self._received_blocks[validator.idx] = validator.produced_block
+
     def pick_wining_block(self, idx_to_device):
         
         last_block = self.blockchain.get_last_block()
@@ -772,9 +789,9 @@ class Device():
         
         ''' validate model signature to make sure the validator is performing model aggregation honestly '''
         layer_to_model_sig_row, layer_to_model_sig_col = sum_over_model_params(winning_block.global_model_in_block)
-        worker_to_acc_weight = defaultdict(float)
-        for worker_idx, uw, in winning_block.worker_to_uw.items():
-            worker_to_acc_weight[worker_idx] = uw + self._pouw_book[worker_idx]
+        worker_to_acc_weight = {}
+        for worker_idx, _ in winning_block.worker_to_model_sig.items():
+            worker_to_acc_weight[worker_idx] = winning_block.worker_to_uw[worker_idx] + self._pouw_book[worker_idx]
 
         # normalize weights (again) to between 0 and 1
         worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
@@ -794,7 +811,7 @@ class Device():
                     workers_layer_to_model_sig_col[layer] += model_sig_col[layer] * acc_weight
         
         if not self.compare_dicts_of_tensors(layer_to_model_sig_row, workers_layer_to_model_sig_row) or not self.compare_dicts_of_tensors(layer_to_model_sig_col, workers_layer_to_model_sig_col):
-            print(f"{self.role} {self.idx}'s winning block has invalid workers' model signatures.")
+            print(f"{self.role} {self.idx}'s picked winning block has invalid workers' model signatures or useful work book is inconsistent with the block producer's.")
             return False
 
         return True
@@ -820,7 +837,7 @@ class Device():
 
     ''' Helper Functions '''
 
-    def compare_dicts_of_tensors(self, dict1, dict2, atol=1e-2, rtol=1e-2):
+    def compare_dicts_of_tensors(self, dict1, dict2, atol=1e-3, rtol=1e-3):
             """
             Compares two dictionaries with torch.Tensor values.
 

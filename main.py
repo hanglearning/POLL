@@ -46,7 +46,7 @@ models = {
     }
 }
 
-parser = argparse.ArgumentParser(description='VBFL2')
+parser = argparse.ArgumentParser(description='LBFL')
 
 ####################### wandb setting #######################
 
@@ -60,12 +60,10 @@ parser.add_argument('--train_verbose', type=bool, default=False)
 parser.add_argument('--test_verbose', type=bool, default=False)
 parser.add_argument('--prune_verbose', type=bool, default=False)
 parser.add_argument('--resync_verbose', type=bool, default=True)
+parser.add_argument('--validation_verbose', type=int, default=0, help='show validation process detail')
 parser.add_argument('--seed', type=int, default=40)
-parser.add_argument('--debug_validation', type=int, default=0, help='show validation process detail')
 parser.add_argument('--log_dir', type=str, default="./logs")
-parser.add_argument('--aio', type=int, default=1, help='All-in-one mode, if set to 1, it indicates that all devices treat all others as peers. If set to 0, peers are assigned randomly.')
-parser.add_argument('--peer_percent', type=float, default=0.7, help='if aio 0, this indicates the percentage of peers to assign. See assign_peers() in device.py')
-
+parser.add_argument('--peer_percent', type=float, default=1, help='this indicates the percentage of peers to assign. See assign_peers() in device.py. As the communication goes on, a device should be able to know all other devices in the network.')
 
 ####################### federated learning setting #######################
 parser.add_argument('--arch', type=str, default='cnn', help='cnn|mlp')
@@ -134,7 +132,7 @@ def main():
     try:
         # on Google Colab with Google Drive mounted
         import google.colab
-        args.log_dir = f"/content/drive/MyDrive/VBFL2/{log_root_name}"
+        args.log_dir = f"/content/drive/MyDrive/LBFL/{log_root_name}"
     except:
         # local
         args.log_dir = f"{args.log_dir}/{log_root_name}"
@@ -187,7 +185,7 @@ def main():
     malicious_block_record = []
     malicious_winning_count = 0
     
-    ######## VBFL2 ########
+    ######## LBFL ########
 
     for comm_round in range(1, args.comm_rounds + 1):
         
@@ -220,8 +218,9 @@ def main():
             device.malicious_worker_to_acc = {}
             device._device_to_ungranted_uw = {}
             device.worker_to_model_sig = {}
+            device.produced_block = None
             
-        ''' Device Starts VBFL2 '''
+        ''' Device Starts LBFL '''
 
         ''' Phase 1 - Worker Learning and Pruning '''
         # all online devices become workers in this phase
@@ -249,13 +248,16 @@ def main():
             # broadcast tx to the network
             worker.broadcast_worker_tx(init_online_devices)
 
+        print(f"\nWorkers {[worker.idx for worker in online_workers]} have broadcasted worker transactions to validators.")
+
         ''' Phase 2 - Validators Model Validation and Exchange Votes '''
         # workers volunteer to become validators
         if args.n_validators == '*':
             n_validators = random.randint(1, len(online_workers))
         else:
             n_validators = int(args.n_validators)
-        print(f"Round {comm_round}, {n_validators} validators selected.")
+        
+        print(f"\nRound {comm_round}, {n_validators} validators selected.")
         wandb.log({"comm_round": comm_round, "n_validators": n_validators})
 
         online_validators = []
@@ -277,6 +279,9 @@ def main():
             validator.make_validator_tx()
             # broadcast tx to all the validators
             validator.broadcast_validator_tx(online_validators)
+        
+        print(f"\nValidators {[validator.idx for validator in online_validators]} have broadcasted validator transactions to other validators.")
+
 
         ''' Phase 3 - Validators Perform FedAvg and Produce Blocks '''
         for validator_iter in range(len(online_validators)):
@@ -286,12 +291,15 @@ def main():
             # validator produces global model
             validator.produce_global_model_and_reward(comm_round)
             # validator produce block
-            block = validator.produce_block()
+            validator.produce_block()
             # validator broadcasts block
-            validator.broadcast_block(validator.idx, online_workers, block)
-        
+            validator.broadcast_block()
+        print(f"\nValidators {[validator.idx for validator in online_validators]} have broadcasted their blocks to the network.")
+
         ''' Phase 4 - All Online Devices Process Received Blocks '''
         for device in online_workers:
+            # receive blocks from validators
+            device.receive_blocks(online_validators)
             # pick winning block based on PoUW
             winning_block = device.pick_wining_block(idx_to_device)
             if not winning_block:
@@ -306,7 +314,7 @@ def main():
             # check performance of the validation mechanism
             # device.check_validation_performance(winning_block, idx_to_device, comm_round)
 
-        ''' End of VBFL2 '''
+        ''' End of LBFL '''
 
         ''' Evaluation '''
         ### record forking events ###
@@ -334,9 +342,6 @@ def main():
                     f.write(f'{comm_round}\n')
                    break
         malicious_block_record.append([comm_round, malicious_block])
-            
-        #     print(device.idx, "pruned_amount", round(get_pruned_amount_by_weights(device.model), 2))
-        #     print(f"Length: {device.blockchain.get_chain_length()}")
     
     print(f"{malicious_winning_count}/{comm_round} times malicious device won a block.")
     with open(f'{args.log_dir}/malicious_winning_record.txt', 'a') as f:

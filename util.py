@@ -133,12 +133,13 @@ def fed_avg(models: List[nn.Module], weight: float, device='cuda:0'):
     return aggr_model
 
 @torch.no_grad()
-def weighted_fedavg(weights_to_model, device='cuda:0'):
+def weighted_fedavg(worker_to_weight, worker_to_model, device='cuda:0'):
     """
         weights_to_model: dict of accuracy to model, with accuracy being weight
     """
-    weights = list(weights_to_model.keys())
-    models = list(weights_to_model.values())
+    benigh_workers = worker_to_weight.keys()
+    weights = [worker_to_weight[w] for w in benigh_workers]
+    models = [worker_to_model[w] for w in benigh_workers]
 
     aggr_model = models[0].__class__().to(device)
     model_params = []
