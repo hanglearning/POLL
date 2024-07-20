@@ -118,6 +118,9 @@ class Device():
         L_or_M = "M" if self._is_malicious else "L"
         print(f"\n---------- {L_or_M} Worker:{self.idx} {self._user_labels} Train to Max Acc Update ---------------------")
 
+        # generate mask object in-place to make reinit and copy_model() work, in case no block was appended from last round, then no pruned model was obtained
+        produce_mask_from_model(self.model)
+
         if comm_round > 1 and self.args.rewind:
         # reinitialize model with init_params
             source_params = dict(self.init_global_model.named_parameters())
@@ -138,8 +141,6 @@ class Device():
         epoch = 0
         max_model_epoch = epoch
 
-        # generate mask object in-place to make copy_model() work
-        produce_mask_from_model(self.model)
         max_model = copy_model(self.model, self.args.dev_device)
 
         # init max_acc as the initial global model acc on local training set
@@ -637,7 +638,7 @@ class Device():
                 print(f"{self.idx}'s chain resynced chain from {device.idx}.")
                 return True
         if self.args.resync_verbose:
-            print(f"{self.idx}'s chain not resynced.")
+            print(f"\nDevice {self.idx}'s chain not resynced.")
         return False
             
     def post_resync(self):
