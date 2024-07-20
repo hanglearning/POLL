@@ -187,7 +187,7 @@ def main():
     
     ######## LBFL ########
 
-    for comm_round in range(1, args.comm_rounds + 1):
+    for comm_round in range(1, args.rounds + 1):
         
         print_text = f"Comm Round: {comm_round}"
         print()
