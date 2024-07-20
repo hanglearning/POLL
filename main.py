@@ -127,7 +127,7 @@ def main():
     print(f"Using device {args.dev_device}")
 
     exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
-    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_comm_rounds_{args.comm_rounds}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}_rewind_{args.rewind}"
+    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_rounds_{args.rounds}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}_rewind_{args.rewind}"
 
     try:
         # on Google Colab with Google Drive mounted
