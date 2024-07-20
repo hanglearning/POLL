@@ -45,7 +45,7 @@ class Device():
         self.peers = set()
         self.blockchain = Blockchain()
         self._received_blocks = {}
-        self._resync_to = idx # record the last round's picked winning validator to resync chain, default to itself
+        self._resync_to = None # record the last round's picked winning validator to resync chain
         
         # for workers
         self._worker_tx = None
@@ -609,8 +609,6 @@ class Device():
             self._pouw_book = {validator: uw for validator, uw in sorted(self._pouw_book.items(), key=lambda x: x[1], reverse=True)}
             for device_idx, uw in self._pouw_book.items():
                 device = idx_to_device[device_idx]
-                if device.role != "validator":
-                    continue
                 if device.is_online():
                     # compare chain difference, assume the last block's hash is valid
                     if self.blockchain.get_last_block_hash() == device.blockchain.get_last_block_hash():

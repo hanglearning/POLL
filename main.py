@@ -72,7 +72,7 @@ parser.add_argument('--dataset_mode', type=str,default='non-iid', help='non-iid|
 parser.add_argument('--rate_unbalance', type=float, default=1.0, help='unbalance between labels')
 parser.add_argument('--dataloader_workers', type=int, default=0, help='num of pytorch dataloader workers')
 parser.add_argument('--batch_size', type=int, default=10)
-parser.add_argument('--comm_rounds', type=int, default=25)
+parser.add_argument('--rounds', type=int, default=25)
 parser.add_argument('--epochs', type=int, default=500, help="local max training epochs to get the max accuracy")
 parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
@@ -127,7 +127,7 @@ def main():
     print(f"Using device {args.dev_device}")
 
     exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
-    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}_rewind_{args.rewind}"
+    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_comm_rounds_{args.comm_rounds}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}_rewind_{args.rewind}"
 
     try:
         # on Google Colab with Google Drive mounted
@@ -144,7 +144,7 @@ def main():
     wandb.init(project=args.wandb_project, entity=args.wandb_username)
     if not args.wandb_enable:
         wandb.init(mode="disabled")
-    wandb.run.name = log_root_name
+    wandb.run.name = f"{log_root_name}_run_note_{args.run_note}"
     wandb.config.update(args)
     
     ######## initiate devices ########
