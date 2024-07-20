@@ -290,7 +290,7 @@ def main():
             # verify validator tx signature
             validator.receive_and_verify_validator_tx_sig(online_validators)
             # validator produces global model
-            validator.produce_global_model_and_reward(online_workers)
+            validator.produce_global_model_and_reward(idx_to_device, comm_round)
             # validator post prune the global model
             validator.validator_post_prune()
             # validator produce block

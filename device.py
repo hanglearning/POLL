@@ -408,7 +408,7 @@ class Device():
     def broadcast_validator_tx(self, online_validators):
         return
 
-    def produce_global_model_and_reward(self, online_workers):
+    def produce_global_model_and_reward(self, idx_to_device, comm_round):
 
         def assign_ranks(a): # ChatGPT's code
             # Sort the dictionary by value in descending order, with stable sorting to preserve order for ties
@@ -483,20 +483,21 @@ class Device():
         worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
 
         for w in worker_to_acc_weight:
-            if online_workers[w]._is_malicious:
+            if idx_to_device[w]._is_malicious:
                 to_print = "NOTE: Malicious worker's model is selected for aggregation."
                 print("\033[91m" + to_print + "\033[0m")
-                print(to_print)
             print(f"Worker {w} has weight {worker_to_acc_weight[w]}")
-            print(f"Worker {w} has ungranted uw {self._device_to_ungranted_uw[w]}")
+            is_malicious = 'M' if idx_to_device[w]._is_malicious else 'L'
+            with open(f'{self.args.log_dir}/worker_weight_round_{comm_round}.txt', 'a') as f:
+                f.write(f'{w} - {is_malicious} weight {worker_to_acc_weight[w]}\n')
         
         # produce final global model
         self._final_global_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
-        wandb.log({f"Validator {self.idx} weighted global test acc": self.eval_model_by_global_test(self._final_global_model)})
+        wandb.log({f"Validator {self.idx} weighted global test acc": self.eval_model_by_global_test(self._final_global_model), "comm_round": comm_round})
 
         worker_to_acc_weight = {worker_idx: 1 for worker_idx, acc in worker_to_acc_weight.items()}
         vanilla_fedavg_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
-        wandb.log({f"Validator {self.idx} weighted global test acc": self.eval_model_by_global_test(vanilla_fedavg_model)})
+        wandb.log({f"Validator {self.idx} Vanilla FedAvg global test acc": self.eval_model_by_global_test(vanilla_fedavg_model), "comm_round": comm_round})
 
     def validator_post_prune(self): # essential to have to push model pruning, also seen as an incentive of becoming validators
         
