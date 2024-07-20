@@ -109,74 +109,14 @@ class Device():
         # Access the underlying dataset
         self._train_loader.dataset.targets = 9 - self._train_loader.dataset.targets
 
-    def pre_prune(self, comm_round):
-        # prune the global model before training for training efficiency, since the global model is an aggregation of all local models and may not suit the worker's local model perfectly
-        
-        wandb.log({f"{self.idx}_{self._user_labels}_global_test_acc": self.eval_model_by_global_test(self.model), "comm_round": comm_round})
-
-        # prune to as long as accuracy drops
-        init_model_acc = self.eval_model_by_train(self.model)
-        accs = [init_model_acc]
-
-        if init_model_acc < self.args.pre_prune_threshold:
-            return
-        # create mask object in-place
-        produce_mask_from_model(self.model)
-        pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
-        if 1 - pruned_amount <= self.args.target_sparsity:
-            print(f"Worker {self.idx}'s model at sparsity {1 - pruned_amount}, which is already <= the target sparsity. Skip pre-pruning.")
-            return
-        
-        print()
-        L_or_M = "M" if self._is_malicious else "L"
-        print(f"\n---------- {L_or_M} Worker:{self.idx} pre pruning ---------------------")
-
-        def is_decreasing(arr, check_last_n=2):
-            if len(arr) < check_last_n:
-                return False
-
-            for i in range(-check_last_n, -1):
-                if arr[i] <= arr[i + 1]:
-                    return False
-
-            return True
-        
-        init_pruned_amount = pruned_amount
-        last_pruned_model = copy_model(self.model, self.args.dev_device)
-        while True:
-            pruned_amount += self.args.prune_step
-            pruned_model = copy_model(self.model, self.args.dev_device)
-            l1_prune(model=pruned_model,
-                        amount=pruned_amount,
-                        name='weight',
-                        verbose=self.args.prune_verbose)
-            
-            model_acc = self.eval_model_by_train(pruned_model)
-
-            # prune until accuracy starts to decline or below the target sparsity
-            if is_decreasing(accs) or 1 - pruned_amount <= self.args.target_sparsity:
-                self.model = copy_model(last_pruned_model, self.args.dev_device)
-                break
-            
-            accs.append(model_acc)
-            last_pruned_model = copy_model(pruned_model, self.args.dev_device)
-
-        after_pruned_amount = get_pruned_amount_by_mask(last_pruned_model) # pruned_amount = 0s/total_params = 1 - sparsity
-        after_pruning_acc = self.eval_model_by_train(last_pruned_model)
-
-        print(f"After pre-prune, model sparsity becomes: {1 - after_pruned_amount:.2f}")
-        print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
-        print(f"Pruned amount: {after_pruned_amount - init_pruned_amount:.2f}")
-
     def model_learning_max(self, comm_round):
+
+        wandb.log({f"{self.idx}_{self._user_labels}_global_test_acc": self.eval_model_by_global_test(self.model), "comm_round": comm_round})
         
         # train to max accuracy
         print()
         L_or_M = "M" if self._is_malicious else "L"
         print(f"\n---------- {L_or_M} Worker:{self.idx} {self._user_labels} Train to Max Acc Update ---------------------")
-
-        # generate mask object in-place
-        produce_mask_from_model(self.model)
 
         if comm_round > 1 and self.args.rewind:
         # reinitialize model with init_params
@@ -197,6 +137,9 @@ class Device():
         
         epoch = 0
         max_model_epoch = epoch
+
+        # generate mask object in-place to make copy_model() work
+        produce_mask_from_model(self.model)
         max_model = copy_model(self.model, self.args.dev_device)
 
         # init max_acc as the initial global model acc on local training set
@@ -243,13 +186,12 @@ class Device():
         wandb.log({f"{self.idx}_{self._user_labels}_max_local_training_acc": self.max_model_acc, "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_local_test_acc": self.eval_model_by_local_test(self.model), "comm_round": comm_round})
 
-    def post_prune(self, comm_round):
+    def worker_prune(self, comm_round):
 
         # model prune percentage
-        before_pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
-
-        if 1 - before_pruned_amount <= self.args.target_sparsity:
-            print(f"Worker {self.idx}'s model at sparsity {1 - before_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
+        init_pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
+        if 1 - init_pruned_amount <= self.args.target_sparsity:
+            print(f"Worker {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
             return
         
         print()
@@ -257,40 +199,27 @@ class Device():
         print(f"\n---------- {L_or_M} Worker:{self.idx} starts pruning ---------------------")
 
         init_model_acc = self.eval_model_by_train(self.model)
-        
         accs = [init_model_acc]
         # models = deque([copy_model(self.model, self.args.dev_device)]) - used if want the model with the best accuracy arrived at an intermediate pruned amount
         # print("Initial pruned model accuracy", init_model_acc)
 
-        pruned_amount = before_pruned_amount
-        
-        def is_decreasing(arr, check_last_n=2):
-            if len(arr) < check_last_n:
-                return False
-
-            for i in range(-check_last_n, -1):
-                if arr[i] <= arr[i + 1]:
-                    return False
-
-            return True
-        
+        to_prune_amount = init_pruned_amount
         last_pruned_model = copy_model(self.model, self.args.dev_device)
+
         while True:
-            pruned_amount += self.args.prune_step
-            # if pruned_amount > self.args.max_prune_step: # prevent some devices to prune too aggressively
-            #     break
+            to_prune_amount += self.args.prune_step
             pruned_model = copy_model(self.model, self.args.dev_device)
             l1_prune(model=pruned_model,
-                        amount=pruned_amount,
+                        amount=to_prune_amount,
                         name='weight',
                         verbose=self.args.prune_verbose)
             
             model_acc = self.eval_model_by_train(pruned_model)
 
             # prune until the accuracy drop exceeds the threshold or below the target sparsity
-            if init_model_acc - model_acc > self.args.prune_acc_drop_threshold or 1 - pruned_amount <= self.args.target_sparsity:
+            if init_model_acc - model_acc > self.args.prune_acc_drop_threshold or 1 - to_prune_amount <= self.args.target_sparsity:
                 # revert to the last pruned model
-                # print("pruned amount", pruned_amount, "target_sparsity", self.args.target_sparsity)
+                # print("pruned amount", to_prune_amount, "target_sparsity", self.args.target_sparsity)
                 # print(f"init_model_acc - model_acc: {init_model_acc- model_acc} > self.args.prune_acc_drop_threshold: {self.args.prune_acc_drop_threshold}")
                 self.model = copy_model(last_pruned_model, self.args.dev_device)
                 self.max_model_acc = accs[-1]
@@ -299,12 +228,12 @@ class Device():
             accs.append(model_acc)
             last_pruned_model = copy_model(pruned_model, self.args.dev_device)
 
-        after_pruned_amount = get_pruned_amount_by_mask(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
+        after_pruned_amount = get_pruned_amount_by_mask(self.model) # to_prune_amount = 0s/total_params = 1 - sparsity
         after_pruning_acc = self.eval_model_by_train(self.model)
 
         print(f"Model sparsity: {1 - after_pruned_amount:.2f}")
         print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
-        print(f"Pruned amount: {after_pruned_amount - before_pruned_amount:.2f}")
+        print(f"Pruned amount: {after_pruned_amount - init_pruned_amount:.2f}")
 
         wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_sparsity": 1 - after_pruned_amount, "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_after_pruning_training_acc": after_pruning_acc, "comm_round": comm_round})
@@ -382,7 +311,7 @@ class Device():
                 print(f"Signature of tx from worker {validator['idx']} is invalid.")
 
     # validate model by comparing euclidean distance of the unpruned weights
-    def validate_models(self, comm_round, idx_to_device):
+    def validate_models(self):
         # at this moment, both models have no mask objects, and may or may not have been pruned
 
         # validate model siganture
@@ -478,7 +407,7 @@ class Device():
     def broadcast_validator_tx(self, online_validators):
         return
 
-    def produce_global_model_and_reward(self, comm_round):
+    def produce_global_model_and_reward(self):
 
         def assign_ranks(a): # ChatGPT's code
             # Sort the dictionary by value in descending order, with stable sorting to preserve order for ties
@@ -552,12 +481,53 @@ class Device():
         # normalize weights to between 0 and 1
         worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
 
-
         # produce final global model
         self._final_global_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
+    
+    def validator_post_prune(self): # essential to have to push model pruning, also seen as an incentive of becoming validators
+        
+        # create mask object in-place
+        produce_mask_from_model(self._final_global_model)
+        init_pruned_amount = get_prune_summary(model=self._final_global_model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
+        if 1 - init_pruned_amount <= self.args.target_sparsity:
+            print(f"Validator {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
+            return
+        
+        print()
+        L_or_M = "M" if self._is_malicious else "L"
+        print(f"\n---------- {L_or_M} Validator:{self.idx} post pruning ---------------------")
 
-        # prune until accuracy decreases
-        # self.validator_post_prune() - to cope with the model signature verification. moved to let workers do pre-prune
+        init_model_acc = self.eval_model_by_train(self._final_global_model)
+        accs = [init_model_acc]
+
+        to_prune_amount = init_pruned_amount
+        last_pruned_model = copy_model(self._final_global_model, self.args.dev_device)
+        
+        while True:
+            to_prune_amount += self.args.prune_step
+            pruned_model = copy_model(self._final_global_model, self.args.dev_device)
+            l1_prune(model=pruned_model,
+                        amount=to_prune_amount,
+                        name='weight',
+                        verbose=self.args.prune_verbose)
+
+            model_acc = self.eval_model_by_train(pruned_model)
+
+            # prune until the accuracy drop exceeds the threshold
+            if init_model_acc - model_acc > self.args.prune_acc_drop_threshold or 1 - to_prune_amount <= self.args.target_sparsity:
+                self._final_global_model = copy_model(last_pruned_model, self.args.dev_device)
+                self.max_model_acc = accs[-1]
+                break
+
+            accs.append(model_acc)
+            last_pruned_model = copy_model(pruned_model, self.args.dev_device)
+
+        after_pruned_amount = get_pruned_amount_by_mask(self._final_global_model) # to_prune_amount = 0s/total_params = 1 - sparsity
+        after_pruning_acc = self.eval_model_by_train(self._final_global_model)
+
+        print(f"Model sparsity: {1 - after_pruned_amount:.2f}")
+        print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
+        print(f"Pruned amount: {after_pruned_amount - init_pruned_amount:.2f}")
 
     def produce_block(self):
         
@@ -672,7 +642,7 @@ class Device():
             
     def post_resync(self):
         # update global model from the new block
-        self.model = deepcopy(self.blockchain.get_last_block().global_model_in_block)
+        self.model = deepcopy(self.blockchain.get_last_block().global_model)
     
     def validate_chain(self, chain_to_check):
         blockchain_to_check = chain_to_check.get_chain()
@@ -797,7 +767,7 @@ class Device():
             return False
         
         ''' validate model signature to make sure the validator is performing model aggregation honestly '''
-        layer_to_model_sig_row, layer_to_model_sig_col = sum_over_model_params(winning_block.global_model_in_block)
+        layer_to_model_sig_row, layer_to_model_sig_col = sum_over_model_params(winning_block.global_model)
         worker_to_acc_weight = {}
         for worker_idx, _ in winning_block.worker_to_model_sig.items():
             worker_to_acc_weight[worker_idx] = winning_block.worker_to_uw[worker_idx] + self._pouw_book[worker_idx]
@@ -840,7 +810,7 @@ class Device():
         # used to record if a block is produced by a malicious device
         self.has_appended_block = True
         # update global model
-        self.model = deepcopy(block.global_model_in_block)
+        self.model = deepcopy(block.global_model)
         # save global model weights and update path
         # self.save_model_weights_to_log(comm_round, 0, global_model=True)
 

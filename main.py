@@ -95,8 +95,6 @@ parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model p
 parser.add_argument('--target_sparsity', type=float, default=0.1, help='target sparsity for pruning, stop pruning if below this threshold')
 parser.add_argument('--prune_step', type=float, default=0.05, help='increment of pruning step')
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
-parser.add_argument('--pre_prune_threshold', type=float, default=0.5, help="global model's initial accuracy should exceed this threshold to do pre-pruning")
-
 
 ####################### blockchain setting #######################
 parser.add_argument('--n_devices', type=int, default=10)
@@ -129,7 +127,7 @@ def main():
     print(f"Using device {args.dev_device}")
 
     exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
-    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}"
+    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}_rewind_{args.rewind}"
 
     try:
         # on Google Colab with Google Drive mounted
@@ -240,12 +238,10 @@ def main():
             # resync chain
             if worker.resync_chain(comm_round, idx_to_device, init_online_devices):
                 worker.post_resync()
-            # perform pre-training-pruning
-            worker.pre_prune(comm_round)
             # perform training
             worker.model_learning_max(comm_round)
-            # perform post-training-pruning
-            worker.post_prune(comm_round)
+            # perform pruning
+            worker.worker_prune(comm_round)
             # generate model signature
             worker.generate_model_sig()
             # make tx
@@ -279,7 +275,7 @@ def main():
             # verify worker tx signature
             validator.receive_and_verify_worker_tx_sig(online_workers)
             # validate model based on euclidean distance and accuracy
-            validator.validate_models(comm_round, idx_to_device)
+            validator.validate_models()
             # make validator transaction
             validator.make_validator_tx()
             # broadcast tx to all the validators
@@ -294,7 +290,9 @@ def main():
             # verify validator tx signature
             validator.receive_and_verify_validator_tx_sig(online_validators)
             # validator produces global model
-            validator.produce_global_model_and_reward(comm_round)
+            validator.produce_global_model_and_reward()
+            # validator post prune the global model
+            validator.validator_post_prune()
             # validator produce block
             validator.produce_block()
             # validator broadcasts block
