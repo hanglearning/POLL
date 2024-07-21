@@ -436,31 +436,36 @@ class Device():
 
         pouw_ranks = assign_ranks(self._pouw_book)
 
-        # aggregate votes - normalize by the rank of useful work of the validator
-        worker_idx_to_votes = defaultdict(int)
+        # aggregate votes and accuracies - normalize by the rank of useful work of the validator
+        worker_idx_to_votes = defaultdict(float)
+        worker_idx_to_acc = defaultdict(float)
         for validator_idx, validator_tx in self._verified_validator_txs.items():
-            for worker_idx in validator_tx['benigh_worker_to_acc'].keys():
+            for worker_idx, worker_acc in validator_tx['benigh_worker_to_acc'].items():
                 worker_idx_to_votes[worker_idx] += 1 * (pouw_ranks[validator_idx] / len(pouw_ranks)) # malicious validator's voting power should be degraded
-            for worker_idx in validator_tx['malicious_worker_to_acc'].keys():
+                worker_idx_to_acc[worker_idx] += worker_acc * (pouw_ranks[validator_idx] / len(pouw_ranks))
+            for worker_idx, worker_acc in validator_tx['malicious_worker_to_acc'].items():
                 worker_idx_to_votes[worker_idx] += -1 * (pouw_ranks[validator_idx] / len(pouw_ranks))
+                worker_idx_to_acc[worker_idx] += worker_acc * (pouw_ranks[validator_idx] / len(pouw_ranks))
         
         # for the vote of the validator itself, no normalization needed as an incentive
-        for worker_idx in self.benigh_worker_to_acc.keys():
+        for worker_idx, worker_acc in self.benigh_worker_to_acc.items():
             worker_idx_to_votes[worker_idx] += 1
-        for worker_idx in self.malicious_worker_to_acc.keys():
+            worker_idx_to_acc[worker_idx] += worker_acc
+        for worker_idx, worker_acc in self.malicious_worker_to_acc.items():
             worker_idx_to_votes[worker_idx] -= 1
+            worker_idx_to_acc[worker_idx] += worker_acc
         worker_idx_to_votes[self.idx] += 1
+        worker_idx_to_acc[self.idx] += self.max_model_acc
         
         # select local models if their votes > 0 for FedAvg, normalize acc by worker's historical pouw to avoid zero validated acc
         worker_to_acc_weight = {}
         for worker_idx, votes in worker_idx_to_votes.items():
             if worker_idx in self._verified_worker_txs and votes > 0:
-                worker_acc = self.benigh_worker_to_acc[worker_idx] if worker_idx in self.benigh_worker_to_acc else self.malicious_worker_to_acc[worker_idx]
                 # tanh normalize, a bit complicated
                 # normalized_accuracy_weight = float(torch.tanh(torch.tensor(worker_acc + self._pouw_book[worker_idx], device=self.args.dev_device)))
-                worker_to_acc_weight[worker_idx] = worker_acc + self._pouw_book[worker_idx]
-                # reward the workers by self tested accuracy (not granted yet)
-                self._device_to_ungranted_uw[worker_idx] = worker_acc
+                worker_to_acc_weight[worker_idx] = worker_idx_to_acc[worker_idx] + self._pouw_book[worker_idx]
+                # reward the workers by self normalized accuracy (not granted yet)
+                self._device_to_ungranted_uw[worker_idx] = worker_idx_to_acc[worker_idx]
                 # print(f"Worker {worker_idx}'s model is selected by validator {self.idx} for aggregation.")
             else:
                 if worker_idx != self.idx:
@@ -474,8 +479,8 @@ class Device():
         self.worker_to_model_sig = {worker_idx: self.worker_to_model_sig[worker_idx] for worker_idx in worker_to_acc_weight}
 
         # add its own model
-        worker_to_acc_weight[self.idx] = self.max_model_acc + self._pouw_book[self.idx]
-        self._device_to_ungranted_uw[self.idx] = self.max_model_acc
+        worker_to_acc_weight[self.idx] = worker_idx_to_acc[self.idx] + self._pouw_book[self.idx]
+        self._device_to_ungranted_uw[self.idx] = worker_idx_to_acc[self.idx]
         worker_to_model[self.idx] = self.model
         self.worker_to_model_sig[self.idx] = {'model_sig_row': self.layer_to_model_sig_row, 'model_sig_row_sig': self.sign_msg(str(self.layer_to_model_sig_row)), 'model_sig_col': self.layer_to_model_sig_col, 'model_sig_col_sig': self.sign_msg(str(self.layer_to_model_sig_col)), 'worker_rsa': self.return_rsa_pub_key()}
 
@@ -489,7 +494,7 @@ class Device():
             print(f"Worker {w} has weight {worker_to_acc_weight[w]}")
             is_malicious = 'M' if idx_to_device[w]._is_malicious else 'L'
             with open(f'{self.args.log_dir}/worker_weight_round_{comm_round}.txt', 'a') as f:
-                f.write(f'{w} - {is_malicious} weight {worker_to_acc_weight[w]}\n')
+                f.write(f'Validator {self.idx} treats worker {w} {is_malicious} weight {worker_to_acc_weight[w]}\n')
         
         # produce final global model
         self._final_global_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
