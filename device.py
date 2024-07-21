@@ -437,7 +437,7 @@ class Device():
         pouw_ranks = assign_ranks(self._pouw_book)
 
         # aggregate votes - normalize by the rank of useful work of the validator
-        worker_idx_to_votes = defaultdict(int)
+        worker_idx_to_votes = defaultdict(float)
         for validator_idx, validator_tx in self._verified_validator_txs.items():
             for worker_idx in validator_tx['benigh_worker_to_acc'].keys():
                 worker_idx_to_votes[worker_idx] += 1 * (pouw_ranks[validator_idx] / len(pouw_ranks)) # malicious validator's voting power should be degraded
