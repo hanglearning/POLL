@@ -18,6 +18,7 @@ warnings.filterwarnings("ignore")
 from pathlib import Path
 from datetime import datetime
 from pytorch_lightning import seed_everything
+from collections import defaultdict
 
 from device import Device
 from util import *
@@ -97,7 +98,7 @@ parser.add_argument('--target_sparsity', type=float, default=0.1, help='target s
 parser.add_argument('--prune_step', type=float, default=0.05, help='increment of pruning step')
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
 parser.add_argument('--worker_prune_acc_trigger', type=float, default=0.8, help='must achieve this accuracy to trigger worker to post prune its local model')
-parser.add_argument('--validator_prune_acc_trigger', type=float, default=0.8, help='must achieve this accuracy to trigger validator to post prune the global model')
+# parser.add_argument('--validator_prune_acc_trigger', type=float, default=0.8, help='must achieve this accuracy to trigger validator to post prune the global model')
 
 
 ####################### blockchain setting #######################
@@ -229,7 +230,7 @@ def main():
             device.produced_block = None            
             device.benigh_worker_to_acc = {}
             device.malicious_worker_to_acc = {}
-            device._device_to_ungranted_uw = {}
+            device._device_to_ungranted_uw = defaultdict(float)
             device.worker_to_model_sig = {}
             device.produced_block = None
             
@@ -303,7 +304,8 @@ def main():
             validator.produce_global_model_and_reward(idx_to_device, comm_round)
             # validator post prune the global model
             # validator.validator_post_prune()
-            validator.validator_post_prune2()
+            # validator.validator_post_prune2()
+            validator.validator_post_prune3()
             # validator produce block
             validator.produce_block()
             # validator broadcasts block
@@ -315,7 +317,8 @@ def main():
             # receive blocks from validators
             device.receive_blocks(online_validators)
             # pick winning block based on PoUW
-            winning_block = device.pick_winning_block(idx_to_device)
+            # winning_block = device.pick_winning_block(idx_to_device)
+            winning_block = device.pick_winning_block2(idx_to_device)
             if not winning_block:
                 # no winning_block found, perform chain_resync next round
                 continue
