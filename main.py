@@ -77,7 +77,7 @@ parser.add_argument('--epochs', type=int, default=500, help="local max training 
 parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--optimizer', type=str, default="Adam", help="SGD|Adam")
 parser.add_argument('--n_samples', type=int, default=20)
-parser.add_argument('--n_class', type=int, default=3)
+parser.add_argument('--n_classes', type=int, default=3)
 parser.add_argument('--n_malicious', type=int, default=8, help="number of malicious nodes in the network")
 
 parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
@@ -86,6 +86,7 @@ parser.add_argument('--target_acc', type=float, default=0.9, help='target accura
 ####################### validation and rewards setting #######################
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
 parser.add_argument('--validate_center_threshold', type=float, default=0.1, help='only recognize malicious devices if the difference of two centers of KMeans exceed this threshold')
+parser.add_argument('--inverse_acc_weights', type=int, default=1, help='sometimes may inverse the accuracy weights to give more weights to minority workers. ideally, malicious workers should have been filtered out and not be considered here')
 
 ####################### attack setting #######################
 parser.add_argument('--attack_type', type=int, default=0, help='0 - no attack, 1 - model poisoning attack, 2 - label flipping attack, 3 - lazy attack')
@@ -95,6 +96,9 @@ parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model p
 parser.add_argument('--target_sparsity', type=float, default=0.1, help='target sparsity for pruning, stop pruning if below this threshold')
 parser.add_argument('--prune_step', type=float, default=0.05, help='increment of pruning step')
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
+parser.add_argument('--worker_prune_acc_trigger', type=float, default=0.8, help='must achieve this accuracy to trigger worker to post prune its local model')
+parser.add_argument('--validator_prune_acc_trigger', type=float, default=0.8, help='must achieve this accuracy to trigger validator to post prune the global model')
+
 
 ####################### blockchain setting #######################
 parser.add_argument('--n_devices', type=int, default=10)
@@ -106,6 +110,8 @@ parser.add_argument('--network_stability', type=float, default=1.0,
                     help='the odds a device can be reached')
 parser.add_argument('--malicious_always_online', type=int, default=1, 
                     help='1 - malicious devices are always online; 0 - malicious devices can be online or offline depending on network_stability')
+parser.add_argument('--top_percent_winning', type=int, default=0.3, 
+                    help='when picking the winning block, considering the validators having the useful work within this top percent. see pick_winning_block()')
 
 ####################### debug setting #######################
 parser.add_argument('--model_save_freq', type=int, default=0, help='0 - never save, 1 - save every round, n - save every n rounds')
@@ -122,12 +128,15 @@ def set_seed(seed):
 def main(): 
 
     set_seed(args.seed)
+
+    if not args.attack_type:
+        args.n_malicious = 0
     
     args.dev_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(f"Using device {args.dev_device}")
 
     exe_date_time = datetime.now().strftime("%m%d%Y_%H%M%S")
-    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_rounds_{args.rounds}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}_rewind_{args.rewind}"
+    log_root_name = f"LBFL_seed_{args.seed}_{exe_date_time}_rounds_{args.rounds}_epochs_{args.epochs}_val_{args.n_validators}_mal_{args.n_malicious}_attack_{args.attack_type}_noise_{args.noise_variance}_rewind_{args.rewind}_nsamples_{args.n_samples}_nclasses_{args.n_classes}"
 
     try:
         # on Google Colab with Google Drive mounted
@@ -161,7 +170,7 @@ def main():
     
     train_loaders, test_loaders, user_labels, global_test_loader = DataLoaders(n_devices=args.n_devices,
     dataset_name=args.dataset,
-    n_class=args.n_class,
+    n_classes=args.n_classes,
     nsamples=args.n_samples,
     log_dirpath=args.log_dir,
     mode=args.dataset_mode,
@@ -213,6 +222,7 @@ def main():
             # workers
             device.layer_to_model_sig_row = {}
             device.layer_to_model_sig_col = {}
+            device._worker_pruned_amount = 0
             # validators
             device._verified_worker_txs = {}
             device._final_global_model = None
@@ -236,7 +246,7 @@ def main():
         for worker_iter in range(len(online_workers)):
             worker = online_workers[worker_iter]
             # resync chain
-            if worker.resync_chain(comm_round, idx_to_device, init_online_devices):
+            if worker.resync_chain(comm_round, idx_to_device):
                 worker.post_resync()
             # perform training
             worker.model_learning_max(comm_round)
@@ -247,7 +257,7 @@ def main():
             # make tx
             worker.make_worker_tx()
             # broadcast tx to the network
-            worker.broadcast_worker_tx(init_online_devices)
+            worker.broadcast_worker_tx()
 
         print(f"\nWorkers {[worker.idx for worker in online_workers]} have broadcasted worker transactions to validators.")
 
@@ -292,7 +302,8 @@ def main():
             # validator produces global model
             validator.produce_global_model_and_reward(idx_to_device, comm_round)
             # validator post prune the global model
-            validator.validator_post_prune()
+            # validator.validator_post_prune()
+            validator.validator_post_prune2()
             # validator produce block
             validator.produce_block()
             # validator broadcasts block
@@ -304,7 +315,7 @@ def main():
             # receive blocks from validators
             device.receive_blocks(online_validators)
             # pick winning block based on PoUW
-            winning_block = device.pick_wining_block(idx_to_device)
+            winning_block = device.pick_winning_block(idx_to_device)
             if not winning_block:
                 # no winning_block found, perform chain_resync next round
                 continue

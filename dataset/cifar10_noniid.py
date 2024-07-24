@@ -2,7 +2,7 @@ import numpy as np
 from torchvision import datasets, transforms
 
 
-def get_dataset_cifar10_extr_noniid(n_devices, n_class, nsamples, rate_unbalance, log_dirpath):
+def get_dataset_cifar10_extr_noniid(n_devices, n_classes, nsamples, rate_unbalance, log_dirpath):
     data_dir = './data'
     apply_transform = transforms.Compose(
         [transforms.ToTensor(),
@@ -15,17 +15,17 @@ def get_dataset_cifar10_extr_noniid(n_devices, n_class, nsamples, rate_unbalance
 
     # Chose equal splits for every user
     user_groups_train, user_groups_test, user_groups_labels = cifar_extr_noniid(
-        train_dataset, test_dataset, n_devices, n_class, nsamples, rate_unbalance, log_dirpath)
+        train_dataset, test_dataset, n_devices, n_classes, nsamples, rate_unbalance, log_dirpath)
     return train_dataset, test_dataset, user_groups_train, user_groups_test, user_groups_labels
 
 
-def cifar_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_samples, rate_unbalance, log_dirpath):
+def cifar_extr_noniid(train_dataset, test_dataset, n_devices, n_classes, num_samples, rate_unbalance, log_dirpath):
     num_shards_train, num_imgs_train = int(50000/num_samples), num_samples
     num_classes = 10
     num_imgs_perc_test, num_imgs_test_total = 1000, 10000
 
-    assert(n_class * n_devices <= num_shards_train)
-    assert(n_class <= num_classes)
+    assert(n_classes * n_devices <= num_shards_train)
+    assert(n_classes <= num_classes)
 
     idx_class = [i for i in range(num_classes)]
     idx_shard = np.array([i for i in range(num_shards_train)])
@@ -58,7 +58,7 @@ def cifar_extr_noniid(train_dataset, test_dataset, n_devices, n_class, num_sampl
     # divide and assign
     for i in range(n_devices):
         user_labels = np.array([])
-        temp_set = set(np.random.choice(10, n_class, replace=False))
+        temp_set = set(np.random.choice(10, n_classes, replace=False))
         dict_users_labels[i] = temp_set
         rand_set = []
         for j in temp_set:

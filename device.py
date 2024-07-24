@@ -59,9 +59,9 @@ class Device():
         self.model = copy_model(init_global_model, args.dev_device)
         self.model_path = init_global_model_path
         self.max_model_acc = 0
+        self._worker_pruned_amount = 0
         # for validators
         self._validator_tx = None
-        self._associated_workers = set() # ideally, all workers should be associated with a validator
         self._worker_txs = []
         self._verified_worker_txs = {} # signature verified
         self._validator_txs = []
@@ -69,10 +69,10 @@ class Device():
         self._verified_validator_txs = {}
         self._final_global_model = None
         self.produced_block = None
-        self._iden_benigh_workers = None
         self._pouw_book = {}
         self._device_to_ungranted_uw = {}
         self.worker_to_model_sig = {}
+        self.benigh_worker_to_acc = {}
         # init key pair
         self._modulus = None
         self._private_key = None
@@ -189,10 +189,14 @@ class Device():
 
     def worker_prune(self, comm_round):
 
+        if not self._is_malicious and self.max_model_acc < self.args.worker_prune_acc_trigger:
+            print(f"Worker {self.idx}'s local model max accuracy at {self.max_model_acc}, which is < the prune acc trigger {self.args.worker_prune_acc_trigger}. Skip pruning.")
+            return
+
         # model prune percentage
         init_pruned_amount = get_prune_summary(model=self.model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
-        if 1 - init_pruned_amount <= self.args.target_sparsity:
-            print(f"Worker {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
+        if not self._is_malicious and 1 - init_pruned_amount <= self.args.target_sparsity:
+            print(f"Worker {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity {self.args.target_sparsity}. Skip pruning.")
             return
         
         print()
@@ -231,6 +235,8 @@ class Device():
 
         after_pruned_amount = get_pruned_amount_by_mask(self.model) # to_prune_amount = 0s/total_params = 1 - sparsity
         after_pruning_acc = self.eval_model_by_train(self.model)
+
+        self._worker_pruned_amount = after_pruned_amount
 
         print(f"Model sparsity: {1 - after_pruned_amount:.2f}")
         print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
@@ -276,8 +282,8 @@ class Device():
         worker_tx['tx_sig'] = self.sign_msg(str(worker_tx))
         self._worker_tx = worker_tx
     
-    def broadcast_worker_tx(self, online_devices_list):
-        # worker broadcast tx, imagine the tx is broadcasted to all devices volunterring to become validators
+    def broadcast_worker_tx(self):
+        # worker broadcast tx, imagine the tx is broadcasted to all peers volunterring to become validators
         # see receive_and_verify_worker_tx_sig()
         return
    
@@ -394,6 +400,12 @@ class Device():
                     else:
                         self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
 
+        # sometimes may inverse the accuracy weights to account for minority workers. ideally, malicious workers should have been filtered out and put in malicious_worker_to_acc
+        if self.args.inverse_acc_weights and random.random() <= 0.5:
+            print(f"Validator {self.idx} has inversed its accuracy weights.")
+            self.benigh_worker_to_acc = {worker_idx: 1 - acc for worker_idx, acc in self.benigh_worker_to_acc.items()}
+            self.malicious_worker_to_acc = {worker_idx: 1 - acc for worker_idx, acc in self.malicious_worker_to_acc.items()}
+
     def make_validator_tx(self):
          
         validator_tx = {
@@ -441,7 +453,7 @@ class Device():
         worker_idx_to_acc = defaultdict(float)
         for validator_idx, validator_tx in self._verified_validator_txs.items():
             for worker_idx, worker_acc in validator_tx['benigh_worker_to_acc'].items():
-                worker_idx_to_votes[worker_idx] += 1 * (pouw_ranks[validator_idx] / len(pouw_ranks)) # malicious validator's voting power should be degraded
+                worker_idx_to_votes[worker_idx] += 1 * (pouw_ranks[validator_idx] / len(pouw_ranks)) # malicious devices' voting power should be degraded
                 worker_idx_to_acc[worker_idx] += worker_acc * (pouw_ranks[validator_idx] / len(pouw_ranks))
             for worker_idx, worker_acc in validator_tx['malicious_worker_to_acc'].items():
                 worker_idx_to_votes[worker_idx] += -1 * (pouw_ranks[validator_idx] / len(pouw_ranks))
@@ -491,23 +503,29 @@ class Device():
             if idx_to_device[w]._is_malicious:
                 to_print = "NOTE: Malicious worker's model is selected for aggregation."
                 print("\033[91m" + to_print + "\033[0m")
-            print(f"Worker {w} has weight {worker_to_acc_weight[w]}")
+            # print(f"Worker {w} has weight {worker_to_acc_weight[w]}")
             is_malicious = 'M' if idx_to_device[w]._is_malicious else 'L'
             with open(f'{self.args.log_dir}/worker_weight_round_{comm_round}.txt', 'a') as f:
                 f.write(f'Validator {self.idx} treats worker {w} {is_malicious} weight {worker_to_acc_weight[w]}\n')
         
         # produce final global model
         self._final_global_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
-        wandb.log({f"Validator {self.idx} weighted global test acc": self.eval_model_by_global_test(self._final_global_model), "comm_round": comm_round})
+        # wandb.log({f"Validator {self.idx} weighted global test acc": self.eval_model_by_global_test(self._final_global_model), "comm_round": comm_round})
 
-        worker_to_acc_weight = {worker_idx: 1 for worker_idx, acc in worker_to_acc_weight.items()}
-        vanilla_fedavg_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
-        wandb.log({f"Validator {self.idx} Vanilla FedAvg global test acc": self.eval_model_by_global_test(vanilla_fedavg_model), "comm_round": comm_round})
+        # worker_to_acc_weight = {worker_idx: 1 for worker_idx, acc in worker_to_acc_weight.items()}
+        # vanilla_fedavg_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
+        # wandb.log({f"Validator {self.idx} Vanilla FedAvg global test acc": self.eval_model_by_global_test(vanilla_fedavg_model), "comm_round": comm_round})
 
     def validator_post_prune(self): # essential to have to push model pruning, also seen as an incentive of becoming validators
-        
+
         # create mask object in-place
         produce_mask_from_model(self._final_global_model)
+        init_model_acc = self.eval_model_by_train(self._final_global_model)
+
+        if init_model_acc < self.args.validator_prune_acc_trigger:
+            print(f"Validator {self.idx}'s local test accuracy at {init_model_acc}, which is < the post prune accuracy threshold {self.args.validator_prune_acc_trigger}. Skip post-pruning.")
+            return
+        
         init_pruned_amount = get_prune_summary(model=self._final_global_model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
         if 1 - init_pruned_amount <= self.args.target_sparsity:
             print(f"Validator {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
@@ -516,8 +534,7 @@ class Device():
         print()
         L_or_M = "M" if self._is_malicious else "L"
         print(f"\n---------- {L_or_M} Validator:{self.idx} post pruning ---------------------")
-
-        init_model_acc = self.eval_model_by_train(self._final_global_model)
+        
         accs = [init_model_acc]
 
         to_prune_amount = init_pruned_amount
@@ -549,6 +566,60 @@ class Device():
         print(f"Pruned model before and after accuracy: {init_model_acc:.2f}, {after_pruning_acc:.2f}")
         print(f"Pruned amount: {after_pruned_amount - init_pruned_amount:.2f}")
 
+    def validator_post_prune2(self): # essential to have to push model pruning, also seen as an incentive of becoming validators
+
+        produce_mask_from_model(self._final_global_model)
+
+        init_model_acc = self.eval_model_by_train(self._final_global_model)
+
+        if not self._is_malicious and init_model_acc < self.args.validator_prune_acc_trigger:
+            print(f"Validator {self.idx}'s local test accuracy at {init_model_acc}, which is < the post prune accuracy threshold {self.args.validator_prune_acc_trigger}. Skip post-pruning.")
+            return
+
+        init_pruned_amount = get_prune_summary(model=self._final_global_model, name='weight')['global'] # pruned_amount = 0s/total_params = 1 - sparsity
+        if not self._is_malicious and 1 - init_pruned_amount <= self.args.target_sparsity:
+            print(f"Validator {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
+            return
+        
+        print()
+        L_or_M = "M" if self._is_malicious else "L"
+        print(f"\n---------- {L_or_M} Validator:{self.idx} post pruning ---------------------")
+
+        # for models with local dataset accuracy higher than itself's, get the pruned amount
+        worker_to_acc = {}
+        worker_to_pruned_amount = {}
+        for worker_idx, acc in self.benigh_worker_to_acc.items():
+            if acc >= self.max_model_acc:
+                worker_model = self._verified_worker_txs[worker_idx]['model']
+                produce_mask_from_model(worker_model)
+                pruned_amount = get_pruned_amount_by_mask(worker_model)
+                worker_to_acc[worker_idx] = acc
+                worker_to_pruned_amount[worker_idx] = pruned_amount
+
+        # add its own model
+        worker_to_acc[self.idx] = self.max_model_acc
+        worker_to_pruned_amount[self.idx] = self._worker_pruned_amount
+
+        worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc.values()) for worker_idx, acc in worker_to_acc.items()}
+        weighted_pruned_amount = 0
+        for worker_idx, acc in worker_to_acc_weight.items():
+            weighted_pruned_amount += worker_to_pruned_amount[worker_idx] * acc
+
+        weighted_pruned_amount = min(weighted_pruned_amount, 1 - self.args.target_sparsity)
+
+        if self._is_malicious:
+            weighted_pruned_amount = 1 - self.args.target_sparsity # always aggresively prune the model
+
+        # post_prune the model
+        l1_prune(model=self._final_global_model,
+                        amount=weighted_pruned_amount,
+                        name='weight',
+                        verbose=self.args.prune_verbose)
+
+        print(f"{L_or_M} Validator {self.idx} has pruned {weighted_pruned_amount:.2f} of the model.")
+
+
+
     def produce_block(self):
         
         def sign_block(block_to_sign):
@@ -576,11 +647,14 @@ class Device():
     def assign_peers(self, idx_to_device):
         peer_size = math.ceil(len(idx_to_device) * self.args.peer_percent)
         self.peers = set(random.sample(list(idx_to_device.keys()), peer_size))
-        self.peers.remove(self.idx)
-        self._pouw_book = {key: 0 for key in idx_to_device.keys()}
-
+        self.peers.discard(self.idx)
+        self._pouw_book = {key: 0 for key in self.peers}
+        self._pouw_book[self.idx] = 0
+        
     def update_peers(self, peers_of_other_device):
-        self.peers = self.peers.union(peers_of_other_device)
+        new_peers = peers_of_other_device.difference(self.peers)
+        self._pouw_book.update({key: 0 for key in new_peers})
+        self.peers.update(peers_of_other_device)
 
     def set_online(self):
         if self.args.malicious_always_online and self._is_malicious:
@@ -601,7 +675,7 @@ class Device():
             for idx in block.worker_to_uw:
                 self._pouw_book[idx] += block.worker_to_uw[idx]
     
-    def resync_chain(self, comm_round, idx_to_device, online_devices_list):
+    def resync_chain(self, comm_round, idx_to_device):
         """ 
             Return:
             - True if the chain needs to be resynced, False otherwise
@@ -622,41 +696,40 @@ class Device():
                 # update pouw_book
                 self.recalc_useful_work()
                 return True                
-        online_devices_list = copy(online_devices_list)
-        if self._pouw_book:
-            # resync chain from online validators having the highest recorded uw
-            self._pouw_book = {validator: uw for validator, uw in sorted(self._pouw_book.items(), key=lambda x: x[1], reverse=True)}
-            for device_idx, uw in self._pouw_book.items():
-                device = idx_to_device[device_idx]
-                if device.is_online():
-                    # compare chain difference, assume the last block's hash is valid
-                    if self.blockchain.get_last_block_hash() == device.blockchain.get_last_block_hash():
-                        return False
-                    else:
-                        # validate chain
-                        if not self.validate_chain(device.blockchain):
-                            continue
-                        # update chain
-                        self.blockchain.replace_chain(device.blockchain.chain)
-                        print(f"\n{self.role} {self.idx}'s chain is resynced from {device.idx}, who picked {idx_to_device[device.idx].blockchain.get_last_block().produced_by}'s block.")
-                        # update pouw_book
-                        self.recalc_useful_work()
-                        return True
-        else:
-            # sync chain by randomly picking a device when join in the middle
-            while online_devices_list:
-                picked_device = random.choice(online_devices_list)
-                # validate chain
-                if not self.validate_chain(picked_device.blockchain):
-                    online_devices_list.remove(picked_device)
+        # resync chain from online peers using the same logic in pick_winning_block()
+        online_peers = [peer for peer in self.peers if idx_to_device[peer].is_online()]
+        online_peers_pouw_book = {peer: self._pouw_book[peer] for peer in online_peers}
+        online_peers_pouw_book = {peer: uw for peer, uw in sorted(online_peers_pouw_book.items(), key=lambda x: x[1], reverse=True)}
+        device_at_threshold = math.ceil(len(online_peers_pouw_book) * self.args.top_percent_winning)
+        useful_work_at_threshold = online_peers_pouw_book[list(online_peers_pouw_book.keys())[device_at_threshold]]
+        
+        device_to_pruned_amount = {}
+        for device_idx, useful_wowrk in online_peers_pouw_book.items():
+            device = idx_to_device[device_idx]
+            if useful_wowrk >= useful_work_at_threshold:
+                if device.blockchain.get_last_block():
+                    device_to_pruned_amount[device_idx] = get_pruned_amount_by_mask(device.blockchain.get_last_block().global_model)
+                else:
                     continue
-                self.blockchain.replace_chain(picked_device.blockchain)
-                self.recalc_useful_work()
-                print(f"{self.idx}'s chain resynced chain from {device.idx}.")
-                return True
-        if self.args.resync_verbose:
-            print(f"\nDevice {self.idx}'s chain not resynced.")
-        return False
+            else:
+                break
+        resync_to_device = idx_to_device[max(device_to_pruned_amount, key=device_to_pruned_amount.get)]
+        self.update_peers(resync_to_device.peers)
+        # compare chain difference, assume the last block's hash is valid
+        if self.blockchain.get_last_block_hash() == resync_to_device.blockchain.get_last_block_hash():
+            return False
+        else:
+            # validate chain
+            if not self.validate_chain(resync_to_device.blockchain):
+                print(f"resync_to devic {resync_to_device.idx} chain validation failed. Chain not resynced.")
+                return False
+            # update chain
+            self.blockchain.replace_chain(resync_to_device.blockchain.chain)
+            print(f"\n{self.role} {self.idx}'s chain is resynced from {resync_to_device.idx}, who picked {resync_to_device.blockchain.get_last_block().produced_by}'s block.")
+            # update pouw_book
+            self.recalc_useful_work()
+            return True
+
             
     def post_resync(self):
         # update global model from the new block
@@ -714,48 +787,36 @@ class Device():
                 self.update_peers(validator.peers)
                 self._received_blocks[validator.idx] = validator.produced_block
 
-    def pick_wining_block(self, idx_to_device):
-        
-        last_block = self.blockchain.get_last_block()
-        if last_block:
-            # will not choose the block from the last block's produced validator to prevent monopoly
-            self._received_blocks.pop(last_block.produced_by, None)
+    def pick_winning_block(self, idx_to_device):
+
+        picked_block = None
 
         if not self._received_blocks:
             print(f"\n{self.idx} has not received any block. Resync chain next round.")
-            return
-            
-        while self._received_blocks:
-            # TODO - check while logic when blocks are not valid
-
-            # when all validators have the same pouw, workers pick randomly, a validator favors its own block. This most likely happens only in the 1st comm round
-
-            if len(set(self._pouw_book.values())) == 1:
-                if self.role == 'worker':
-                    picked_validator = random.choice(list(self._received_blocks.keys()))
-                    picked_block = self._received_blocks[picked_validator]
-                    self._received_blocks.pop(picked_validator, None)
-                    if self.verify_block_sig(picked_block):
-                        winning_validator = picked_block.produced_by
-                    else:
-                        continue
-                if 'validator' in self.role:
-                    winning_validator = self.idx
-                    picked_block = self.produced_block                
-                print(f"\n{self.role} {self.idx} {self._user_labels} picks {winning_validator}'s {idx_to_device[winning_validator]._user_labels} block.")
-                return picked_block
-            else:
-                self._pouw_book = {validator: pouw for validator, pouw in sorted(self._pouw_book.items(), key=lambda x: x[1], reverse=True)}
-                received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks.values()}
-                for validator, pouw in self._pouw_book.items():
-                    if validator in received_validators_to_blocks:
-                        picked_block = received_validators_to_blocks[validator]
-                        winning_validator = validator
-                        print(f"\n{self.role} {self.idx} ({self._user_labels}) picks {winning_validator}'s ({idx_to_device[winning_validator]._user_labels}) block.")
-                        return picked_block           
+            return picked_block
         
-        print(f"\n{self.idx}'s received blocks are not valid. Resync chain next round.")
-        return None # all validators are in black list, resync chain
+        received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks.values()}
+        received_validators_pouw_book = {block.produced_by: self._pouw_book[block.produced_by] for block in self._received_blocks.values()}
+        # sort the pouw book by the highest useful work
+        received_validators_pouw_book = {validator: pouw for validator, pouw in sorted(received_validators_pouw_book.items(), key=lambda x: x[1], reverse=True)}
+        # pick the winning block within the participating validators with the `top_percent_winning` highest useful work having the largest pruned amount
+        validator_at_threshold = int(len(received_validators_to_blocks) * self.args.top_percent_winning)
+        useful_work_at_threshold = received_validators_pouw_book[list(received_validators_pouw_book.keys())[validator_at_threshold]]
+        
+        validator_to_pruned_amount = {}
+        for validator, useful_wowrk in received_validators_pouw_book.items():
+            if useful_wowrk >= useful_work_at_threshold:
+                if validator in received_validators_to_blocks:
+                    validator_to_pruned_amount[validator] = get_pruned_amount_by_mask(received_validators_to_blocks[validator].global_model)
+            else:
+                break
+        max_pruned_amount = max(validator_to_pruned_amount.values())
+        candidates = [validator for validator, pruned_amount in validator_to_pruned_amount.items() if pruned_amount == max_pruned_amount]
+        winning_validator = random.choice(candidates)
+        picked_block = received_validators_to_blocks[winning_validator]
+        print(f"\n{self.role} {self.idx} ({self._user_labels}) picks {winning_validator}'s ({idx_to_device[winning_validator]._user_labels}) block.")
+        
+        return picked_block
 
     def check_block_when_resyncing(self, block, last_block):
         # 1. check block signature
@@ -777,7 +838,7 @@ class Device():
         return False
 
     def verify_winning_block(self, winning_block):
-        # block signature check in pick_wining_block()
+        # block signature check in pick_winning_block()
         # check last block hash match
         if not self.check_last_block_hash_match(winning_block):
             print(f"{self.role} {self.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain in next round.")

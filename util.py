@@ -85,8 +85,6 @@ def l1_prune(model, amount=0.00, name='weight', verbose=True):
         print(tabulate(info, headers='keys', tablefmt='github'))
         print("Total Pruning: {}%".format(global_pruning * 100))
 
-
-
 def produce_mask_from_model(model):
     # use prune with 0 amount to init mask for the model
     # create mask in-place on model
@@ -139,7 +137,7 @@ def weighted_fedavg(worker_to_weight, worker_to_model, device='cuda:0'):
     """
     benigh_workers = worker_to_weight.keys()
     weights = [worker_to_weight[w] for w in benigh_workers]
-    models = [worker_to_model[w] for w in benigh_workers]
+    models = [make_prune_permanent(worker_to_model[w]) for w in benigh_workers]
 
     aggr_model = models[0].__class__().to(device)
     model_params = []
