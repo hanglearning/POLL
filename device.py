@@ -326,10 +326,7 @@ class Device():
                     print(f"Worker {widx} has valid model signature.")
             
                 self.worker_to_model_sig[widx] = {'model_sig_row': wtx['model_sig_row'], 'model_sig_row_sig': wtx['model_sig_row_sig'], 'model_sig_col': wtx['model_sig_col'], 'model_sig_col_sig': wtx['model_sig_col_sig'], 'worker_rsa': worker_rsa}
-        
-        # add its own model signature
-        # self.worker_to_model_sig[self.idx] = {'model_sig_row': self.layer_to_model_sig_row, 'model_sig_row_sig': self.sign_msg(str(self.layer_to_model_sig_row)), 'model_sig_col': self.layer_to_model_sig_col, 'model_sig_col_sig': self.sign_msg(str(self.layer_to_model_sig_col)), 'worker_rsa': self.return_rsa_pub_key()}
-           
+            
         # get validator's model weights
         validator_layer_to_weights = get_trainable_model_weights(self.model)
        
@@ -412,7 +409,7 @@ class Device():
     def produce_global_model_and_reward(self, idx_to_device, comm_round):
 
         # aggregate votes and accuracies - normalize by validator_power, defined by the historical useful work of the validator + 1 (to avoid float point number and 0 division)
-        # for the useful work of the validator itself, can directly add its own max model accuracy, as an incentive to become a validator
+        # for the useful work of the validator itself, it is directly adding its own max model accuracy, as an incentive to become a validator
         worker_idx_to_votes = defaultdict(float)
         worker_idx_to_powered_acc = defaultdict(float)
         for validator_idx, validator_tx in self._verified_validator_txs.items():
@@ -426,19 +423,6 @@ class Device():
                 worker_idx_to_powered_acc[worker_idx] += worker_acc * validator_power
                 self._device_to_ungranted_uw[worker_idx] -= 0
         
-        # # for the useful work of the validator itself, can directly add its own max model accuracy, as an incentive to become a validator
-        # validator_power = self._pouw_book[self.idx] + 1
-        # for worker_idx, worker_acc in self.benigh_worker_to_acc.items():
-        #     worker_idx_to_votes[worker_idx] += 1 * validator_power
-        #     worker_idx_to_powered_acc[worker_idx] += worker_acc * validator_power
-        #     self._device_to_ungranted_uw[worker_idx] += worker_acc
-        # for worker_idx, worker_acc in self.malicious_worker_to_acc.items():
-        #     worker_idx_to_votes[worker_idx] -= 1 * validator_power
-        #     worker_idx_to_powered_acc[worker_idx] += worker_acc * validator_power
-        #     self._device_to_ungranted_uw[worker_idx] -= 0
-        # worker_idx_to_votes[self.idx] += 1 * validator_power
-        # worker_idx_to_powered_acc[self.idx] += self.max_model_acc * validator_power
-        # self._device_to_ungranted_uw[self.idx] += self.max_model_acc
 
         worker_to_acc_weight = {worker: acc_weight for worker, acc_weight in worker_idx_to_powered_acc.items() if worker in self._verified_worker_txs and worker_idx_to_votes[worker] > 0}
         
@@ -447,12 +431,6 @@ class Device():
 
         # only preserve model signature of selected models
         self.worker_to_model_sig = {worker_idx: self.worker_to_model_sig[worker_idx] for worker_idx in worker_to_acc_weight}
-
-        # # add its own model
-        # if worker_idx_to_votes[self.idx] > 0:
-        #     worker_to_acc_weight[self.idx] = worker_idx_to_powered_acc[self.idx]
-        #     worker_to_model[self.idx] = self.model
-        #     self.worker_to_model_sig[self.idx] = {'model_sig_row': self.layer_to_model_sig_row, 'model_sig_row_sig': self.sign_msg(str(self.layer_to_model_sig_row)), 'model_sig_col': self.layer_to_model_sig_col, 'model_sig_col_sig': self.sign_msg(str(self.layer_to_model_sig_col)), 'worker_rsa': self.return_rsa_pub_key()}
 
         # only assign useful work to selected models
         self._device_to_ungranted_uw = {worker_idx: self._device_to_ungranted_uw[worker_idx] for worker_idx in worker_to_acc_weight}
@@ -514,7 +492,7 @@ class Device():
                         name='weight',
                         verbose=self.args.prune_verbose)
 
-        print(f"{L_or_M} Validator {self.idx} has pruned {to_prune_amount - init_pruned_amount:.2f} of the model. Final sparsity: {1 - to_prune_amount:.2f}.")
+        print(f"{L_or_M} Validator {self.idx} has pruned {max(to_prune_amount - init_pruned_amount, 0):.2f} of the model. Final sparsity: {1 - to_prune_amount:.2f}.")
 
 
     def produce_block(self):
@@ -572,6 +550,7 @@ class Device():
                 self._pouw_book[idx] += block.worker_to_uw[idx]
     
     def resync_chain(self, comm_round, idx_to_device):
+        # NOTE - if change logic of resync_chain(), also need to change logic in pick_winning_block()
         """ 
             Return:
             - True if the chain needs to be resynced, False otherwise
@@ -593,23 +572,12 @@ class Device():
                 self.recalc_useful_work()
                 return True                
         # resync chain from online peers using the same logic in pick_winning_block()
-        online_peers = [peer for peer in self.peers if idx_to_device[peer].is_online()]
-        online_peers_pouw_book = {peer: self._pouw_book[peer] for peer in online_peers}
-        online_peers_pouw_book = {peer: uw for peer, uw in sorted(online_peers_pouw_book.items(), key=lambda x: x[1], reverse=True)}
-        device_at_threshold = math.ceil(len(online_peers_pouw_book) * self.args.top_percent_winning)
-        useful_work_at_threshold = online_peers_pouw_book[list(online_peers_pouw_book.keys())[device_at_threshold]]
+        online_peers = [peer for peer in self.peers if idx_to_device[peer].is_online() and idx_to_device[peer].blockchain.get_last_block()]
+        online_peer_to_uw_pruned = {peer: self._pouw_book[peer] * get_pruned_amount_by_mask(idx_to_device[peer].blockchain.get_last_block().global_model) for peer in online_peers}
+        top_uw_pruned = max(online_peer_to_uw_pruned.values())
+        candidates = [peer for peer, uw_pruned in online_peer_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
+        resync_to_device = idx_to_device[random.choice(candidates)]
         
-        device_to_pruned_amount = {}
-        for device_idx, useful_wowrk in online_peers_pouw_book.items():
-            device = idx_to_device[device_idx]
-            if useful_wowrk >= useful_work_at_threshold:
-                if device.blockchain.get_last_block():
-                    device_to_pruned_amount[device_idx] = get_pruned_amount_by_mask(device.blockchain.get_last_block().global_model)
-                else:
-                    continue
-            else:
-                break
-        resync_to_device = idx_to_device[max(device_to_pruned_amount, key=device_to_pruned_amount.get)]
         self.update_peers(resync_to_device.peers)
         # compare chain difference, assume the last block's hash is valid
         if self.blockchain.get_last_block_hash() == resync_to_device.blockchain.get_last_block_hash():
@@ -683,9 +651,11 @@ class Device():
                 self.update_peers(validator.peers)
                 self._received_blocks[validator.idx] = validator.produced_block
 
-    def pick_winning_block(self, idx_to_device): 
+    def pick_winning_block(self, idx_to_device):
+
+        # NOTE - if change logic of pick_winning_block(), also need to change logic in resync_chain()
         
-        # pick the block with the highest useful work * pruned amount - mitigate monopoly
+        # pick the block with the highest (useful_work * pruned_amount) - mitigate monopoly
         picked_block = None
 
         if not self._received_blocks:
@@ -699,11 +669,11 @@ class Device():
         top_uw_pruned = max(validator_to_uw_pruned.values())
         candidates = [validator for validator, uw_pruned in validator_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
         # get the winning validator
-        # winning_validator = max(validator_to_uw_pruned, key=validator_to_uw_pruned.get)
-        winning_validator = random.choice(candidates)
+        winning_validator = random.choice(candidates) # may cause forking in the 1st round and some middle rounds
         if self.idx in candidates:
-            # opportunistic validator
-            winning_validator = self.idx            
+            # oppourtunistic validator
+            winning_validator = self.idx
+        # winning_validator = max(validator_to_uw_pruned, key=validator_to_uw_pruned.get)        
 
         print(f"\n{self.role} {self.idx} ({self._user_labels}) picks {winning_validator}'s ({idx_to_device[winning_validator]._user_labels}) block.")
 

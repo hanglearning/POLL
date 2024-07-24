@@ -294,6 +294,8 @@ def test_by_data_set(
 
 
 def get_pruned_amount_by_weights(model):
+    if check_mask_object_from_model(model):
+        print("\033[91m" + "Warning - get_pruned_amount_by_weights() is called when the model has mask." + "\033[0m")
     total_params_count = get_num_total_model_params(model)
     total_0_count = 0
     total_nan_count = 0
@@ -311,6 +313,8 @@ def get_pruned_amount_by_weights(model):
     return total_0_count / total_params_count
 
 def get_pruned_amount_by_mask(model):
+    if not check_mask_object_from_model(model):
+        sys.exit("Mask object not found.")
     total_params_count = get_num_total_model_params(model)
     total_0_count = 0
     for layer, module in model.named_children():
