@@ -303,9 +303,7 @@ def main():
             # validator produces global model
             validator.produce_global_model_and_reward(idx_to_device, comm_round)
             # validator post prune the global model
-            # validator.validator_post_prune()
-            # validator.validator_post_prune2()
-            validator.validator_post_prune3()
+            validator.validator_post_prune()
             # validator produce block
             validator.produce_block()
             # validator broadcasts block
@@ -317,8 +315,7 @@ def main():
             # receive blocks from validators
             device.receive_blocks(online_validators)
             # pick winning block based on PoUW
-            # winning_block = device.pick_winning_block(idx_to_device)
-            winning_block = device.pick_winning_block2(idx_to_device)
+            winning_block = device.pick_winning_block(idx_to_device)
             if not winning_block:
                 # no winning_block found, perform chain_resync next round
                 continue
@@ -327,7 +324,7 @@ def main():
                 # block check failed, perform chain_resync next round
                 continue
             # append and process block
-            device.append_and_process_block(winning_block, comm_round)
+            device.process_and_append_block(winning_block, comm_round)
             # check performance of the validation mechanism
             # device.check_validation_performance(winning_block, idx_to_device, comm_round)
 

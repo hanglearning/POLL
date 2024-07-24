@@ -370,13 +370,10 @@ def generate_mask_from_0_weights(model):
         prune.l1_unstructured(param, name, amount=mask_amount)
         
 def make_prune_permanent(model):
-    params_pruned = get_prune_params(model, name='weight')
-    try:
+    if check_mask_object_from_model(model):
+        params_pruned = get_prune_params(model, name='weight')
         for param, name in params_pruned:
             prune.remove(param, name)
-    except:
-        # if an unpruned model is passed into this function, ignore
-        pass
     return model
 
 def check_mask_object_from_model(model):
