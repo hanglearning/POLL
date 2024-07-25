@@ -249,7 +249,7 @@ class Device():
                 if "weight" in name:
                     # noise = self.args.noise_variance * torch.randn(weight_params.size()).to(self.args.dev_device) * torch.from_numpy(layer_to_mask[layer]).to(self.args.dev_device)
                     noise = self.args.noise_variance * torch.randn(weight_params.size()).to(self.args.dev_device) * layer_to_mask[layer].to(self.args.dev_device)
-                    weight_params.add_(noise.to(self.args.dev_device))
+                    weight_params = weight_params + noise.to(self.args.dev_device)
         print(f"Device {self.idx} poisoned the whole neural network with variance {self.args.noise_variance}.") # or should say, unpruned weights?
 
     def generate_model_sig(self):
@@ -354,6 +354,7 @@ class Device():
 
         # based on the euclidean distance, decide if the worker is benigh or not by kmeans, k = 2
         kmeans = KMeans(n_clusters=2, random_state=0)
+        del worker_to_ed[self.idx] # delete itself, or itself may be soly treated as a group 
         worker_eds = list(worker_to_ed.values())
         benigh_center_group = -1
         if len(worker_eds) > 1:
@@ -361,7 +362,8 @@ class Device():
             labels = list(kmeans.labels_)
             center0 = kmeans.cluster_centers_[0]
             center1 = kmeans.cluster_centers_[1]
-
+            
+            # lower center means the models are more close, treated as benigh
             if center1 - center0 > self.args.validate_center_threshold:
                 benigh_center_group = 0
             elif center0 - center1 > self.args.validate_center_threshold:
@@ -385,6 +387,9 @@ class Device():
                         self.malicious_worker_to_acc[worker_idx] = worker_to_acc[worker_idx] 
                     else:
                         self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
+        
+        # add itself in benigh workers group
+        self.benigh_worker_to_acc[self.idx] = self.max_model_acc
 
         # sometimes may inverse the accuracy weights to account for minority workers. ideally, malicious workers should have been filtered out and put in malicious_worker_to_acc
         if self.args.inverse_acc_weights and random.random() <= 0.5:
@@ -456,7 +461,8 @@ class Device():
         init_pruned_amount = get_pruned_amount_by_weights(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
         
         if 1 - init_pruned_amount <= self.args.target_sparsity:
-            print(f"Validator {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
+            print(f"\nValidator {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
+            produce_mask_from_model(self.model) # to make get_pruned_amount_by_mask() in pick_winning_block() work
             return
         
         print()
