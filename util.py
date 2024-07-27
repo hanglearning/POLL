@@ -293,12 +293,6 @@ def test_by_data_set(
         print(tabulate(outputs, headers='keys', tablefmt='github'))
     return outputs
 
-def get_pruned_amount(model):
-    make_prune_permanent(model)
-    pruned_amount = get_pruned_amount_by_weights(model)
-    produce_mask_from_model(model)
-    return pruned_amount
-
 
 def get_pruned_amount_by_weights(model):
     if check_mask_object_from_model(model):

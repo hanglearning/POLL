@@ -171,7 +171,7 @@ class Device():
             self.max_model_acc = max_acc
 
         # self.save_model_weights_to_log(comm_round, max_model_epoch)
-        wandb.log({f"{self.idx}_{self._user_labels}_trained_model_sparsity": 1 - get_pruned_amount(self.model), "comm_round": comm_round})
+        wandb.log({f"{self.idx}_{self._user_labels}_trained_model_sparsity": 1 - get_pruned_amount_by_mask(self.model), "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_max_local_training_acc": self.max_model_acc, "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_local_test_acc": self.eval_model_by_local_test(self.model), "comm_round": comm_round})
 
@@ -182,7 +182,7 @@ class Device():
             return
 
         # model prune percentage
-        init_pruned_amount = get_pruned_amount(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
+        init_pruned_amount = get_pruned_amount_by_mask(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
         if not self._is_malicious and 1 - init_pruned_amount <= self.args.target_sparsity:
             print(f"Worker {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity {self.args.target_sparsity}. Skip pruning.")
             return
@@ -219,7 +219,7 @@ class Device():
             accs.append(model_acc)
             last_pruned_model = copy_model(pruned_model, self.args.dev_device)
 
-        after_pruned_amount = get_pruned_amount(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
+        after_pruned_amount = get_pruned_amount_by_mask(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
         after_pruning_acc = self.eval_model_by_train(self.model)
 
         self._worker_pruned_amount = after_pruned_amount
@@ -453,7 +453,7 @@ class Device():
 
     def validator_post_prune(self): # prune by the weighted average of the pruned amount of the selected models
 
-        init_pruned_amount = get_pruned_amount(self._final_global_model) # pruned_amount = 0s/total_params = 1 - sparsity
+        init_pruned_amount = get_pruned_amount_by_mask(self._final_global_model) # pruned_amount = 0s/total_params = 1 - sparsity
         
         if 1 - init_pruned_amount <= self.args.target_sparsity:
             print(f"\nValidator {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
@@ -473,25 +473,25 @@ class Device():
             if worker_idx == self.idx:
                 continue
             worker_model = self._verified_worker_txs[worker_idx]['model']
-            selected_worker_to_pruned_amount[worker_idx] = get_pruned_amount_by_weights(worker_model) # do not use get_pruned_amount() as it creates a mask object for the model which didn't have mask and may cause error later
+            selected_worker_to_pruned_amount[worker_idx] = get_pruned_amount_by_weights(worker_model) 
             selected_worker_to_power[worker_idx] = self._pouw_book[worker_idx] + 1
         
         worker_to_prune_weight = {worker_idx: power/sum(selected_worker_to_power.values()) for worker_idx, power in selected_worker_to_power.items()}
 
-        to_prune_amount = sum([selected_worker_to_pruned_amount[worker_idx] * weight for worker_idx, weight in worker_to_prune_weight.items()])
+        need_pruned_amount = sum([selected_worker_to_pruned_amount[worker_idx] * weight for worker_idx, weight in worker_to_prune_weight.items()])
         if self._is_malicious:
-            to_prune_amount *= 2
+            need_pruned_amount *= 2
 
-        to_prune_amount = min(to_prune_amount, 1 - self.args.target_sparsity)
+        need_pruned_amount = min(need_pruned_amount, 1 - self.args.target_sparsity)
+        to_prune_amount = (need_pruned_amount - init_pruned_amount) / (1 - init_pruned_amount)
 
-        make_prune_permanent(self._final_global_model)
         # post_prune the model
         l1_prune(model=self._final_global_model,
                         amount=to_prune_amount,
                         name='weight',
                         verbose=self.args.prune_verbose)
 
-        print(f"{L_or_M} Validator {self.idx} has pruned {max(to_prune_amount - init_pruned_amount, 0):.2f} of the model. Final sparsity: {1 - to_prune_amount:.2f}.")
+        print(f"{L_or_M} Validator {self.idx} has pruned {need_pruned_amount - init_pruned_amount:.2f} of the model. Final sparsity: {1 - need_pruned_amount:.2f}.")
 
 
     def produce_block(self):
@@ -588,7 +588,7 @@ class Device():
 
         # resync chain from online peers using the same logic in pick_winning_block()
         online_peers = [peer for peer in self.peers if idx_to_device[peer].is_online() and idx_to_device[peer].blockchain.get_last_block()]
-        online_peer_to_uw_pruned = {peer: self._pouw_book[peer] * get_pruned_amount(idx_to_device[peer].blockchain.get_last_block().global_model) for peer in online_peers}
+        online_peer_to_uw_pruned = {peer: self._pouw_book[peer] * get_pruned_amount_by_mask(idx_to_device[peer].blockchain.get_last_block().global_model) for peer in online_peers}
         top_uw_pruned = max(online_peer_to_uw_pruned.values())
         candidates = [peer for peer, uw_pruned in online_peer_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
         self._resync_to = random.choice(candidates)
@@ -683,7 +683,7 @@ class Device():
         
         received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks.values()}
         received_validators_pouw_book = {block.produced_by: self._pouw_book[block.produced_by] for block in self._received_blocks.values()}
-        received_validators_pruned_amount = {block.produced_by: get_pruned_amount_by_mask(block.global_model) for block in self._received_blocks.values()} # a pruned amount is included in the block after validator post prune, use get_pruned_amount_by_mask() rather than get_pruned_amount(), as it will disturb the model signature verification in verify_winning_block() due to shallow copy
+        received_validators_pruned_amount = {block.produced_by: get_pruned_amount_by_mask(block.global_model) for block in self._received_blocks.values()} # a pruned amount is included in the block after validator post prune, use get_pruned_amount_by_mask() 
         validator_to_uw_pruned = {validator: (uw + 1) * pruned_amount for validator, uw in received_validators_pouw_book.items() for validator, pruned_amount in received_validators_pruned_amount.items()}
         top_uw_pruned = max(validator_to_uw_pruned.values())
         candidates = [validator for validator, uw_pruned in validator_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
@@ -785,8 +785,8 @@ class Device():
         # grant useful work to the winning validator by difference of pruned amount between last block and this block
         last_block_global_model_pruned_amount = 0
         if last_block:
-            last_block_global_model_pruned_amount = get_pruned_amount(last_block.global_model)
-        winning_block_global_model_pruned_amount = get_pruned_amount(winning_block.global_model)
+            last_block_global_model_pruned_amount = get_pruned_amount_by_mask(last_block.global_model)
+        winning_block_global_model_pruned_amount = get_pruned_amount_by_mask(winning_block.global_model)
         self._pouw_book[winning_block.produced_by] += max(0, winning_block_global_model_pruned_amount - last_block_global_model_pruned_amount)    
 
         # grant useful work to workers
