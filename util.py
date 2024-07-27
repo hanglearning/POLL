@@ -181,6 +181,7 @@ def copy_model(model: nn.Module, device='cuda:0'):
         Returns a copy of the input model.
         Note: the model should have been pruned for this method to work to create buffer masks and whatnot.
     """
+    produce_mask_from_model(model)
     new_model = create_model(model.__class__, device)
     source_params = dict(model.named_parameters())
     source_buffer = dict(model.named_buffers())
@@ -292,10 +293,16 @@ def test_by_data_set(
         print(tabulate(outputs, headers='keys', tablefmt='github'))
     return outputs
 
+def get_pruned_amount(model):
+    make_prune_permanent(model)
+    pruned_amount = get_pruned_amount_by_weights(model)
+    produce_mask_from_model(model)
+    return pruned_amount
+
 
 def get_pruned_amount_by_weights(model):
     if check_mask_object_from_model(model):
-        print("\033[91m" + "Warning - get_pruned_amount_by_weights() is called when the model has mask." + "\033[0m")
+        sys.exit("\033[91m" + "Warning - get_pruned_amount_by_weights() is called when the model has mask." + "\033[0m")
     total_params_count = get_num_total_model_params(model)
     total_0_count = 0
     total_nan_count = 0
@@ -314,7 +321,7 @@ def get_pruned_amount_by_weights(model):
 
 def get_pruned_amount_by_mask(model):
     if not check_mask_object_from_model(model):
-        sys.exit("Mask object not found.")
+        sys.exit("\033[91m" + "Warning - mask object not found." + "\033[0m")
     total_params_count = get_num_total_model_params(model)
     total_0_count = 0
     for layer, module in model.named_children():

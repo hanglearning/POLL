@@ -246,9 +246,9 @@ def main():
         ### worker starts learning and pruning ###
         for worker_iter in range(len(online_workers)):
             worker = online_workers[worker_iter]
-            # resync chain
+            # resync chain - especially offline devices from last round
             if worker.resync_chain(comm_round, idx_to_device):
-                worker.post_resync()
+                worker.post_resync(idx_to_device)
             # perform training
             worker.model_learning_max(comm_round)
             # perform pruning
@@ -320,7 +320,7 @@ def main():
                 # no winning_block found, perform chain_resync next round
                 continue
             # check block
-            if not device.verify_winning_block(winning_block):
+            if not device.verify_winning_block(winning_block, comm_round, idx_to_device):
                 # block check failed, perform chain_resync next round
                 continue
             # append and process block

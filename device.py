@@ -114,9 +114,6 @@ class Device():
         L_or_M = "M" if self._is_malicious else "L"
         print(f"\n---------- {L_or_M} Worker:{self.idx} {self._user_labels} Train to Max Acc Update ---------------------")
 
-        # generate mask object in-place to make reinit and copy_model() work, in case no block was appended from last round, then no pruned model was obtained
-        produce_mask_from_model(self.model)
-
         if comm_round > 1 and self.args.rewind:
         # reinitialize model with initial params
             source_params = dict(self.init_global_model.named_parameters())
@@ -174,19 +171,18 @@ class Device():
             self.max_model_acc = max_acc
 
         # self.save_model_weights_to_log(comm_round, max_model_epoch)
-        wandb.log({f"{self.idx}_{self._user_labels}_trained_model_sparsity": 1 - get_pruned_amount_by_mask(self.model), "comm_round": comm_round})
+        wandb.log({f"{self.idx}_{self._user_labels}_trained_model_sparsity": 1 - get_pruned_amount(self.model), "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_max_local_training_acc": self.max_model_acc, "comm_round": comm_round})
         wandb.log({f"{self.idx}_{self._user_labels}_local_test_acc": self.eval_model_by_local_test(self.model), "comm_round": comm_round})
 
     def worker_prune(self, comm_round):
 
         if not self._is_malicious and self.max_model_acc < self.args.worker_prune_acc_trigger:
-            print(f"Worker {self.idx}'s local model max accuracy at {self.max_model_acc}, which is < the prune acc trigger {self.args.worker_prune_acc_trigger}. Skip pruning.")
+            print(f"Worker {self.idx}'s local model max accuracy is < the prune acc trigger {self.args.worker_prune_acc_trigger}. Skip pruning.")
             return
 
         # model prune percentage
-        make_prune_permanent(self.model)
-        init_pruned_amount = get_pruned_amount_by_weights(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
+        init_pruned_amount = get_pruned_amount(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
         if not self._is_malicious and 1 - init_pruned_amount <= self.args.target_sparsity:
             print(f"Worker {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity {self.args.target_sparsity}. Skip pruning.")
             return
@@ -200,7 +196,6 @@ class Device():
         # models = deque([copy_model(self.model, self.args.dev_device)]) - used if want the model with the best accuracy arrived at an intermediate pruned amount
 
         to_prune_amount = init_pruned_amount
-        produce_mask_from_model(self.model)
         last_pruned_model = copy_model(self.model, self.args.dev_device)
 
         while True:
@@ -224,7 +219,7 @@ class Device():
             accs.append(model_acc)
             last_pruned_model = copy_model(pruned_model, self.args.dev_device)
 
-        after_pruned_amount = get_pruned_amount_by_mask(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
+        after_pruned_amount = get_pruned_amount(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
         after_pruning_acc = self.eval_model_by_train(self.model)
 
         self._worker_pruned_amount = after_pruned_amount
@@ -413,6 +408,8 @@ class Device():
 
     def produce_global_model_and_reward(self, idx_to_device, comm_round):
 
+        # NOTE - if change the aggregation rule, also need to change in verify_winning_block()
+
         # aggregate votes and accuracies - normalize by validator_power, defined by the historical useful work of the validator + 1 (to avoid float point number and 0 division)
         # for the useful work of the validator itself, it is directly adding its own max model accuracy, as an incentive to become a validator
         worker_idx_to_votes = defaultdict(float)
@@ -427,7 +424,6 @@ class Device():
                 worker_idx_to_votes[worker_idx] += -1 * validator_power
                 worker_idx_to_powered_acc[worker_idx] += worker_acc * validator_power
                 self._device_to_ungranted_uw[worker_idx] -= 0
-        
 
         worker_to_acc_weight = {worker: acc_weight for worker, acc_weight in worker_idx_to_powered_acc.items() if worker in self._verified_worker_txs and worker_idx_to_votes[worker] > 0}
         
@@ -457,12 +453,10 @@ class Device():
 
     def validator_post_prune(self): # prune by the weighted average of the pruned amount of the selected models
 
-        make_prune_permanent(self.model)
-        init_pruned_amount = get_pruned_amount_by_weights(self.model) # pruned_amount = 0s/total_params = 1 - sparsity
+        init_pruned_amount = get_pruned_amount(self._final_global_model) # pruned_amount = 0s/total_params = 1 - sparsity
         
         if 1 - init_pruned_amount <= self.args.target_sparsity:
             print(f"\nValidator {self.idx}'s model at sparsity {1 - init_pruned_amount}, which is already <= the target sparsity. Skip post-pruning.")
-            produce_mask_from_model(self.model) # to make get_pruned_amount_by_mask() in pick_winning_block() work
             return
         
         print()
@@ -479,8 +473,7 @@ class Device():
             if worker_idx == self.idx:
                 continue
             worker_model = self._verified_worker_txs[worker_idx]['model']
-            produce_mask_from_model(worker_model)
-            selected_worker_to_pruned_amount[worker_idx] = get_pruned_amount_by_mask(worker_model)
+            selected_worker_to_pruned_amount[worker_idx] = get_pruned_amount_by_weights(worker_model) # do not use get_pruned_amount() as it creates a mask object for the model which didn't have mask and may cause error later
             selected_worker_to_power[worker_idx] = self._pouw_book[worker_idx] + 1
         
         worker_to_prune_weight = {worker_idx: power/sum(selected_worker_to_power.values()) for worker_idx, power in selected_worker_to_power.items()}
@@ -555,7 +548,7 @@ class Device():
             for idx in block.worker_to_uw:
                 self._pouw_book[idx] += block.worker_to_uw[idx]
     
-    def resync_chain(self, comm_round, idx_to_device):
+    def resync_chain(self, comm_round, idx_to_device, skip_check_peers=False):
         # NOTE - if change logic of resync_chain(), also need to change logic in pick_winning_block()
         """ 
             Return:
@@ -564,48 +557,68 @@ class Device():
         if comm_round == 1 or self.role == "validator":
             # validator not applicable to resync chain
             return False
-        if self._resync_to and idx_to_device[self._resync_to].is_online():
-            # _resync_to specified to the last round's picked winning validator
-            resync_to_device = idx_to_device[self._resync_to]
-            if self.blockchain.get_last_block_hash() == resync_to_device.blockchain.get_last_block_hash():
-                # if two chains are the same, no need to resync. assume the last block's hash is valid
+       
+        if not skip_check_peers:
+            # check peer's longest chain length
+            needs_resync = False
+            online_peers = [peer for peer in self.peers if idx_to_device[peer].is_online()]
+            for peer in online_peers:
+                if idx_to_device[peer].blockchain.get_chain_length() > self.blockchain.get_chain_length():
+                    # if any online peer's chain is longer, resync
+                    needs_resync = True
+                    break
+        
+            if not needs_resync:
                 return False
-            if self.validate_chain(resync_to_device.blockchain):
-                # update chain
-                self.blockchain.replace_chain(resync_to_device.blockchain.chain)
-                print(f"\n{self.role} {self.idx}'s chain is resynced from last round's picked winning validator {self._resync_to}.")
-                # update pouw_book
-                self.recalc_useful_work()
-                return True                
+            
+        if self._resync_to:
+            if idx_to_device[self._resync_to].is_online():
+                # _resync_to specified to the last round's picked winning validator
+                resync_to_device = idx_to_device[self._resync_to]
+                if self.blockchain.get_last_block_hash() == resync_to_device.blockchain.get_last_block_hash():
+                    # if two chains are the same, no need to resync. assume the last block's hash is valid
+                    return False
+                if self.validate_chain(resync_to_device.blockchain):
+                    # update chain
+                    self.blockchain.replace_chain(resync_to_device.blockchain.chain)
+                    print(f"\n{self.role} {self.idx}'s chain is resynced from last time's picked winning validator {self._resync_to}.")                    
+                    return True
+            else:
+                print(f"\nDevice {self.idx}'s _resync_to device {self._resync_to} is offline, resync to another online peer")
+
         # resync chain from online peers using the same logic in pick_winning_block()
         online_peers = [peer for peer in self.peers if idx_to_device[peer].is_online() and idx_to_device[peer].blockchain.get_last_block()]
-        online_peer_to_uw_pruned = {peer: self._pouw_book[peer] * get_pruned_amount_by_mask(idx_to_device[peer].blockchain.get_last_block().global_model) for peer in online_peers}
+        online_peer_to_uw_pruned = {peer: self._pouw_book[peer] * get_pruned_amount(idx_to_device[peer].blockchain.get_last_block().global_model) for peer in online_peers}
         top_uw_pruned = max(online_peer_to_uw_pruned.values())
         candidates = [peer for peer, uw_pruned in online_peer_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
-        resync_to_device = idx_to_device[random.choice(candidates)]
+        self._resync_to = random.choice(candidates)
+        resync_to_device = idx_to_device[self._resync_to]
         
-        self.update_peers(resync_to_device.peers)
+
         # compare chain difference, assume the last block's hash is valid
         if self.blockchain.get_last_block_hash() == resync_to_device.blockchain.get_last_block_hash():
             return False
         else:
             # validate chain
             if not self.validate_chain(resync_to_device.blockchain):
-                print(f"resync_to devic {resync_to_device.idx} chain validation failed. Chain not resynced.")
+                print(f"resync_to device {resync_to_device.idx} chain validation failed. Chain not resynced.")
                 return False
             # update chain
             self.blockchain.replace_chain(resync_to_device.blockchain.chain)
             print(f"\n{self.role} {self.idx}'s chain is resynced from {resync_to_device.idx}, who picked {resync_to_device.blockchain.get_last_block().produced_by}'s block.")
-            # update pouw_book
-            self.recalc_useful_work()
             return True
 
             
-    def post_resync(self):
+    def post_resync(self, idx_to_device):
         # update global model from the new block
         self.model = deepcopy(self.blockchain.get_last_block().global_model)
+        # update peers
+        self.update_peers(idx_to_device[self._resync_to].peers)
+        # recalculate useful work
+        self.recalc_useful_work()
     
     def validate_chain(self, chain_to_check):
+        # TODO - should also verify the block signatures and the model signatures
         blockchain_to_check = chain_to_check.get_chain()
         for i in range(1, len(blockchain_to_check)):
             if not blockchain_to_check[i].previous_block_hash == blockchain_to_check[i-1].compute_hash():
@@ -670,8 +683,8 @@ class Device():
         
         received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks.values()}
         received_validators_pouw_book = {block.produced_by: self._pouw_book[block.produced_by] for block in self._received_blocks.values()}
-        received_validators_pruned_amount = {block.produced_by: get_pruned_amount_by_mask(block.global_model) for block in self._received_blocks.values()} # a pruned amount is included in the block after validator post prune
-        validator_to_uw_pruned = {validator: uw * pruned_amount for validator, uw in received_validators_pouw_book.items() for validator, pruned_amount in received_validators_pruned_amount.items()}
+        received_validators_pruned_amount = {block.produced_by: get_pruned_amount_by_mask(block.global_model) for block in self._received_blocks.values()} # a pruned amount is included in the block after validator post prune, use get_pruned_amount_by_mask() rather than get_pruned_amount(), as it will disturb the model signature verification in verify_winning_block() due to shallow copy
+        validator_to_uw_pruned = {validator: (uw + 1) * pruned_amount for validator, uw in received_validators_pouw_book.items() for validator, pruned_amount in received_validators_pruned_amount.items()}
         top_uw_pruned = max(validator_to_uw_pruned.values())
         candidates = [validator for validator, uw_pruned in validator_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
         # get the winning validator
@@ -704,12 +717,9 @@ class Device():
                 return True
         return False
 
-    def verify_winning_block(self, winning_block):
-        # check last block hash match
-        if not self.check_last_block_hash_match(winning_block):
-            print(f"{self.role} {self.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain in next round.")
-            self._resync_to = winning_block.produced_by
-            return False
+    def verify_winning_block(self, winning_block, comm_round, idx_to_device):
+
+        # NOTE - change the aggregation rule if there's change in produce_global_model_and_reward()
         
         # verify block signature
         if not self.verify_block_sig(winning_block):
@@ -722,7 +732,13 @@ class Device():
                 print(f"{self.role} {self.idx}'s picked winning block has invalid validator transaction signature. Block discarded.")
                 return False
 
-        
+        # check last block hash match
+        if not self.check_last_block_hash_match(winning_block):
+            print(f"{self.role} {self.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain.")
+            self._resync_to = winning_block.produced_by
+            self.resync_chain(comm_round, idx_to_device, skip_check_peers = True)
+            self.post_resync(idx_to_device)
+
         ''' validate model signature to make sure the validator is performing model aggregation honestly '''
         layer_to_model_sig_row, layer_to_model_sig_col = sum_over_model_params(winning_block.global_model)
         
@@ -769,8 +785,8 @@ class Device():
         # grant useful work to the winning validator by difference of pruned amount between last block and this block
         last_block_global_model_pruned_amount = 0
         if last_block:
-            last_block_global_model_pruned_amount = get_pruned_amount_by_mask(last_block.global_model)
-        winning_block_global_model_pruned_amount = get_pruned_amount_by_mask(winning_block.global_model)
+            last_block_global_model_pruned_amount = get_pruned_amount(last_block.global_model)
+        winning_block_global_model_pruned_amount = get_pruned_amount(winning_block.global_model)
         self._pouw_book[winning_block.produced_by] += max(0, winning_block_global_model_pruned_amount - last_block_global_model_pruned_amount)    
 
         # grant useful work to workers
@@ -785,7 +801,7 @@ class Device():
         # save global model weights and update path
         # self.save_model_weights_to_log(comm_round, 0, global_model=True)
         
-        self.blockchain.chain.append(copy(winning_block))
+        self.blockchain.chain.append(deepcopy(winning_block))
 
     ''' Helper Functions '''
 
