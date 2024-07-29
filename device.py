@@ -636,9 +636,9 @@ class Device():
         candidates = [validator for validator, uw_pruned in validator_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
         # get the winning validator
         winning_validator = random.choice(candidates) # may cause forking in the 1st round and some middle rounds
-        if self.idx in candidates:
-            # oppourtunistic validator
-            winning_validator = self.idx
+        # if self.idx in candidates:
+        #     # oppourtunistic validator
+        #     winning_validator = self.idx
         # winning_validator = max(validator_to_uw_pruned, key=validator_to_uw_pruned.get)        
 
         print(f"\n{self.role} {self.idx} ({self._user_labels}) picks {winning_validator}'s ({idx_to_device[winning_validator]._user_labels}) block.")
