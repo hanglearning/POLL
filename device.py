@@ -527,16 +527,16 @@ class Device():
                     print(f"\n{self.role} {self.idx}'s chain is resynced from last time's picked winning validator {self._resync_to}.")                    
                     return True
                 else:
-                    print(f"\nDevice {self.idx}'s _resync_to device's ({self._resync_to}) chain is invalid, resync to another online peer based on '(uw + 1) * pruned_amount'.")
+                    print(f"\nDevice {self.idx}'s _resync_to device's ({self._resync_to}) chain is invalid, resync to another online peer based on '(uw + 1) * (pruned_amount + 1)'.")
             else:
-                print(f"\nDevice {self.idx}'s _resync_to device ({self._resync_to})'s chain is not longer than its own chain. May need to resync to another online peer based on '(uw + 1) * pruned_amount'.") # in the case both devices were offline
+                print(f"\nDevice {self.idx}'s _resync_to device ({self._resync_to})'s chain is not longer than its own chain. May need to resync to another online peer based on '(uw + 1) * (pruned_amount + 1)'.") # in the case both devices were offline
         else:
-            print(f"\nDevice {self.idx}'s does not have a _resync_to device, resync to another online peer based on '(uw + 1) * pruned_amount'.")
+            print(f"\nDevice {self.idx}'s does not have a _resync_to device, resync to another online peer based on '(uw + 1) * (pruned_amount + 1)'.")
 
 
         # resync chain from online peers using the same logic in pick_winning_block()
         online_peers = [peer for peer in self.peers if idx_to_device[peer].is_online() and idx_to_device[peer].blockchain.get_last_block()]
-        online_peer_to_uw_pruned = {peer: (self._pouw_book[peer] + 1) * get_pruned_amount(idx_to_device[peer].blockchain.get_last_block().global_model) for peer in online_peers}
+        online_peer_to_uw_pruned = {peer: (self._pouw_book[peer] + 1) *(get_pruned_amount(idx_to_device[peer].blockchain.get_last_block().global_model) + 1) for peer in online_peers}
         top_uw_pruned = max(online_peer_to_uw_pruned.values())
         candidates = [peer for peer, uw_pruned in online_peer_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
         self._resync_to = random.choice(candidates)
@@ -631,14 +631,14 @@ class Device():
         received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks.values()}
         received_validators_pouw_book = {block.produced_by: self._pouw_book[block.produced_by] for block in self._received_blocks.values()}
         received_validators_pruned_amount = {block.produced_by: get_pruned_amount(block.global_model) for block in self._received_blocks.values()} # a pruned amount is included in the block after validator post prune, use get_pruned_amount() 
-        validator_to_uw_pruned = {validator: (uw + 1) * pruned_amount for validator, uw in received_validators_pouw_book.items() for validator, pruned_amount in received_validators_pruned_amount.items()}
+        validator_to_uw_pruned = {validator: (uw + 1) * (pruned_amount + 1) for validator, uw in received_validators_pouw_book.items() for validator, pruned_amount in received_validators_pruned_amount.items()}
         top_uw_pruned = max(validator_to_uw_pruned.values())
         candidates = [validator for validator, uw_pruned in validator_to_uw_pruned.items() if uw_pruned == top_uw_pruned]
         # get the winning validator
         winning_validator = random.choice(candidates) # may cause forking in the 1st round and some middle rounds
-        # if self.idx in candidates:
-        #     # oppourtunistic validator
-        #     winning_validator = self.idx
+        if self.idx in candidates:
+            # oppourtunistic validator
+            winning_validator = self.idx
         # winning_validator = max(validator_to_uw_pruned, key=validator_to_uw_pruned.get)        
 
         print(f"\n{self.role} {self.idx} ({self._user_labels}) picks {winning_validator}'s ({idx_to_device[winning_validator]._user_labels}) block.")
