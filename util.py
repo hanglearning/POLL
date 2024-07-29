@@ -85,7 +85,7 @@ def l1_prune(model, amount=0.00, name='weight', verbose=True):
         print(tabulate(info, headers='keys', tablefmt='github'))
         print("Total Pruning: {}%".format(global_pruning * 100))
 
-def produce_mask_from_model(model):
+def produce_mask_from_model_in_place(model):
     # use prune with 0 amount to init mask for the model
     # create mask in-place on model
     if check_mask_object_from_model(model):
@@ -181,7 +181,7 @@ def copy_model(model: nn.Module, device='cuda:0'):
         Returns a copy of the input model.
         Note: the model should have been pruned for this method to work to create buffer masks and whatnot.
     """
-    produce_mask_from_model(model)
+    produce_mask_from_model_in_place(model)
     new_model = create_model(model.__class__, device)
     source_params = dict(model.named_parameters())
     source_buffer = dict(model.named_buffers())
@@ -312,6 +312,11 @@ def get_pruned_amount_by_weights(model):
     if total_nan_count > 0:
         sys.exit("nan bug")
     return total_0_count / total_params_count
+
+def get_pruned_amount(model):
+    if check_mask_object_from_model(model):
+        return get_pruned_amount_by_mask(model)
+    return get_pruned_amount_by_weights(model)
 
 def get_pruned_amount_by_mask(model):
     if not check_mask_object_from_model(model):

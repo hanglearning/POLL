@@ -85,9 +85,9 @@ parser.add_argument('--noise_variance', type=int, default=1, help="noise varianc
 parser.add_argument('--target_acc', type=float, default=0.9, help='target accuracy for training and/or pruning, gone offline if achieved')
 
 ####################### validation and rewards setting #######################
-parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, typically used for debug or create baseline with all legitimate models')
+parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, used for debug or create baselines')
 parser.add_argument('--validate_center_threshold', type=float, default=0.1, help='only recognize malicious devices if the difference of two centers of KMeans exceed this threshold')
-parser.add_argument('--inverse_acc_weights', type=int, default=1, help='sometimes may inverse the accuracy weights to give more weights to minority workers. ideally, malicious workers should have been filtered out and not be considered here')
+parser.add_argument('--inverse_acc_weights', type=int, default=0, help='sometimes may inverse the accuracy weights to give more weights to minority workers. ideally, malicious workers should have been filtered out and not be considered here')
 
 ####################### attack setting #######################
 parser.add_argument('--attack_type', type=int, default=0, help='0 - no attack, 1 - model poisoning attack, 2 - label flipping attack, 3 - lazy attack')
@@ -220,19 +220,22 @@ def main():
         for device in init_online_devices:
             device._received_blocks = {}
             device.has_appended_block = False
+            device.verified_winning_block = None
             # workers
             device.layer_to_model_sig_row = {}
             device.layer_to_model_sig_col = {}
+            device.max_model_acc = 0
             device._worker_pruned_amount = 0
             # validators
+            device._validator_tx = None
             device._verified_worker_txs = {}
+            device._verified_validator_txs = {}
             device._final_global_model = None
-            device.produced_block = None            
+            device.produced_block = None 
+            device.worker_to_model_sig = {}           
             device.benigh_worker_to_acc = {}
             device.malicious_worker_to_acc = {}
             device._device_to_ungranted_uw = defaultdict(float)
-            device.worker_to_model_sig = {}
-            device.produced_block = None
             
         ''' Device Starts LBFL '''
 
@@ -310,7 +313,7 @@ def main():
             validator.broadcast_block()
         print(f"\nValidators {[validator.idx for validator in online_validators]} have broadcasted their blocks to the network.")
 
-        ''' Phase 4 - All Online Devices Process Received Blocks '''
+        ''' Phase 4 - All Online Devices Pick and Process Winning Block '''
         for device in online_workers:
             # receive blocks from validators
             device.receive_blocks(online_validators)
@@ -323,10 +326,13 @@ def main():
             if not device.verify_winning_block(winning_block, comm_round, idx_to_device):
                 # block check failed, perform chain_resync next round
                 continue
+        
+        ''' Phase 5 - All Online Devices Process and Append Winning Block '''
+        for device in online_workers:
             # append and process block
-            device.process_and_append_block(winning_block, comm_round)
+            device.process_and_append_block(comm_round)
             # check performance of the validation mechanism
-            # device.check_validation_performance(winning_block, idx_to_device, comm_round)
+            device.check_validation_performance(idx_to_device, comm_round)
 
         ''' End of LBFL '''
 
@@ -334,7 +340,7 @@ def main():
         ### record forking events ###
         forking = 0
         blocks_produced_by = set()
-        for device in online_workers:
+        for device in init_online_devices:
             if device.has_appended_block:
                 blocks_produced_by.add(device.blockchain.get_last_block().produced_by)
                 if len(blocks_produced_by) > 1:
@@ -342,16 +348,28 @@ def main():
                     break
         wandb.log({"comm_round": comm_round, "forking_event": forking})
 
+        ### Record if more than half of the devices have the same block ###
+        serious_forking = 1
+        block_producer_to_count = defaultdict(int)
+        for device in init_online_devices:
+            if device.has_appended_block:
+                block_producer = device.blockchain.get_last_block().produced_by
+                block_producer_to_count[block_producer] += 1
+                if block_producer_to_count[block_producer] >= int(len(init_online_devices) / 2):
+                    serious_forking = 0
+                    break
+        wandb.log({"comm_round": comm_round, "serious_forking": serious_forking})
+
         ### record pouw book ###
         for device in devices_list:
             to_log = {}
             to_log["comm_round"] = comm_round
             to_log[f"{device.idx}_pouw_book"] = device._pouw_book
-            wandb.log(to_log)
+        wandb.log(to_log)
 
-        ### record when malicious validator produced a winning block in network ###
+        ### record when a winning block from a malicious validator is accepted in network ###
         malicious_block = 0
-        for device in online_workers:
+        for device in init_online_devices:
             if device.has_appended_block:
                 block_produced_by = device.blockchain.get_last_block().produced_by
                 if idx_to_device[block_produced_by]._is_malicious:
@@ -366,7 +384,7 @@ def main():
     with open(f'{args.log_dir}/malicious_winning_record.txt', 'a') as f:
         f.write(f'Total times: malicious_winning_count/{comm_round}\n')
     malicious_block_record = wandb.Table(data=malicious_block_record, columns = ["comm_round", "malicious_block"])
-    wandb.log({log_root_name : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Devices' Blocks Won")})
+    wandb.log({log_root_name : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Devices' Blocks Accepted")})
 
         
 
