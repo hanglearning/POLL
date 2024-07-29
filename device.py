@@ -68,8 +68,7 @@ class Device():
         self.produced_block = None
         self._pouw_book = {}
         self.worker_to_model_sig = {}
-        self.benigh_worker_to_acc = {}
-        self.malicious_worker_to_acc = {}
+        self.worker_to_acc = {}
         self._device_to_ungranted_uw = defaultdict(float)
         # init key pair
         self._modulus = None
@@ -301,7 +300,6 @@ class Device():
                 print(f"Signature of tx from worker {validator['idx']} is invalid.")
 
     def validate_models(self):
-        # at this moment, both models have no mask objects, and may or may not have been pruned
 
         # validate model siganture
         for widx, wtx in self._verified_worker_txs.items():
@@ -321,83 +319,25 @@ class Device():
             
                 self.worker_to_model_sig[widx] = {'model_sig_row': wtx['model_sig_row'], 'model_sig_row_sig': wtx['model_sig_row_sig'], 'model_sig_col': wtx['model_sig_col'], 'model_sig_col_sig': wtx['model_sig_col_sig'], 'worker_rsa': worker_rsa}
             
-        # get validator's model weights
-        validator_layer_to_weights = get_trainable_model_weights(self.model)
-       
-        def compare_nn_euclidean_distance(nn1, nn2):
-
-            nn1_net = np.array([])
-            nn2_net = np.array([])
-
-            for layer in nn1.keys():
-                nn1_net = np.concatenate([nn1_net, nn1[layer].flatten()])
-                nn2_net = np.concatenate([nn2_net, nn2[layer].flatten()])
-
-            return np.linalg.norm(nn1_net - nn2_net)
-        
-        # validate model by comparing euclidean distance of the unpruned weights
-        worker_to_ed = {}
-        worker_to_acc = {}
         for widx, wtx in self._verified_worker_txs.items():
             worker_model = wtx['model']
-            worker_layer_to_weights = get_trainable_model_weights(worker_model)        
-            # calculate euclidean distance of weights between validator and worker's models
-            worker_to_ed[widx] = compare_nn_euclidean_distance(worker_layer_to_weights, validator_layer_to_weights)
             # calculate accuracy by validator's local dataset
-            worker_to_acc[widx] = self.eval_model_by_train(worker_model)
+            self.worker_to_acc[widx] = self.eval_model_by_train(worker_model)
 
-        # based on the euclidean distance, decide if the worker is benigh or not by kmeans, k = 2
-        kmeans = KMeans(n_clusters=2, random_state=0)
-        del worker_to_ed[self.idx] # delete itself, or itself may be soly treated as a group 
-        worker_eds = list(worker_to_ed.values())
-        benigh_center_group = -1
-        if len(worker_eds) > 1:
-            kmeans.fit(np.array(worker_eds).reshape(-1,1))
-            labels = list(kmeans.labels_)
-            center0 = kmeans.cluster_centers_[0]
-            center1 = kmeans.cluster_centers_[1]
-            
-            # lower center means the models are more close, treated as benigh
-            if center1 - center0 > self.args.validate_center_threshold:
-                benigh_center_group = 0
-            elif center0 - center1 > self.args.validate_center_threshold:
-                benigh_center_group = 1
-        
-        workers_in_order = list(worker_to_ed.keys())
-        for worker_iter in range(len(workers_in_order)):
-            worker_idx = workers_in_order[worker_iter]
-            if benigh_center_group == -1:
-                # treat all workers as benigh
-                self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
-            else:
-                if labels[worker_iter] == benigh_center_group:
-                    # malicious validator's behaviors - switch benigh and malicious workers
-                    if not self._is_malicious:
-                        self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
-                    else:
-                        self.malicious_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
-                else:
-                    if not self._is_malicious:
-                        self.malicious_worker_to_acc[worker_idx] = worker_to_acc[worker_idx] 
-                    else:
-                        self.benigh_worker_to_acc[worker_idx] = worker_to_acc[worker_idx]
-        
-        # add itself in benigh workers group
-        self.benigh_worker_to_acc[self.idx] = self.max_model_acc
+        # add itself's accuracy
+        self.worker_to_acc[self.idx] = self.max_model_acc
 
-        # sometimes may inverse the accuracy weights to account for minority workers. ideally, malicious workers should have been filtered out and put in malicious_worker_to_acc
+        # sometimes may inverse the accuracy weights to account for minority workers
         if self.args.inverse_acc_weights and random.random() <= 0.5:
+            self.worker_to_acc = {worker_idx: 1 - acc for worker_idx, acc in self.worker_to_acc.items()}
             print(f"Validator {self.idx} has inversed its accuracy weights.")
-            self.benigh_worker_to_acc = {worker_idx: 1 - acc for worker_idx, acc in self.benigh_worker_to_acc.items()}
-            self.malicious_worker_to_acc = {worker_idx: 1 - acc for worker_idx, acc in self.malicious_worker_to_acc.items()}
 
     def make_validator_tx(self):
          
         validator_tx = {
             'validator_idx' : self.idx,
             'rsa_pub_key': self.return_rsa_pub_key(),
-            'benigh_worker_to_acc' : self.benigh_worker_to_acc,
-            'malicious_worker_to_acc' : self.malicious_worker_to_acc
+            'worker_to_acc' : self.worker_to_acc,
         }
         validator_tx['tx_sig'] = self.sign_msg(str(validator_tx))
         self._validator_tx = validator_tx
@@ -411,20 +351,12 @@ class Device():
 
         # aggregate votes and accuracies - normalize by validator_power, defined by the historical useful work of the validator + 1 (to avoid float point number and 0 division)
         # for the useful work of the validator itself, it is directly adding its own max model accuracy, as an incentive to become a validator
-        worker_idx_to_votes = defaultdict(float)
-        worker_idx_to_powered_acc = defaultdict(float)
+        worker_to_acc_weight = defaultdict(float)
         for validator_idx, validator_tx in self._verified_validator_txs.items():
             validator_power = self._pouw_book[validator_idx] + 1
-            for worker_idx, worker_acc in validator_tx['benigh_worker_to_acc'].items():
-                worker_idx_to_votes[worker_idx] += 1 * validator_power # malicious devices' voting power should be degraded
-                worker_idx_to_powered_acc[worker_idx] += worker_acc * validator_power
+            for worker_idx, worker_acc in validator_tx['worker_to_acc'].items():
+                worker_to_acc_weight[worker_idx] += worker_acc * validator_power
                 self._device_to_ungranted_uw[worker_idx] += worker_acc
-            for worker_idx, worker_acc in validator_tx['malicious_worker_to_acc'].items():
-                worker_idx_to_votes[worker_idx] += -1 * validator_power
-                worker_idx_to_powered_acc[worker_idx] += worker_acc * validator_power
-                self._device_to_ungranted_uw[worker_idx] -= 0
-
-        worker_to_acc_weight = {worker: acc_weight for worker, acc_weight in worker_idx_to_powered_acc.items() if worker in self._verified_worker_txs and worker_idx_to_votes[worker] > 0}
         
         # get models for aggregation
         worker_to_model = {worker_idx: self._verified_worker_txs[worker_idx]['model'] for worker_idx in worker_to_acc_weight}
@@ -437,15 +369,6 @@ class Device():
 
         # normalize weights to between 0 and 1
         worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
-
-        for w in worker_to_acc_weight:
-            if idx_to_device[w]._is_malicious:
-                to_print = "NOTE: Malicious worker's model is selected for aggregation."
-                print("\033[91m" + to_print + "\033[0m")
-            # print(f"Worker {w} has weight {worker_to_acc_weight[w]}")
-            is_malicious = 'M' if idx_to_device[w]._is_malicious else 'L'
-            with open(f'{self.args.log_dir}/worker_weight_round_{comm_round}.txt', 'a') as f:
-                f.write(f'Validator {self.idx} treats worker {w} {is_malicious} weight {worker_to_acc_weight[w]}\n')
         
         # produce final global model
         self._final_global_model = weighted_fedavg(worker_to_acc_weight, worker_to_model, device=self.args.dev_device)
@@ -769,18 +692,14 @@ class Device():
         layer_to_model_sig_row, layer_to_model_sig_col = sum_over_model_params(winning_block.global_model)
         
         # perform model signature aggregation by the same rule in produce_global_model_and_reward()
-        worker_idx_to_powered_acc = defaultdict(float)
+        worker_to_acc_weight = defaultdict(float)
         device_to_should_uw = defaultdict(float)
         for validator_idx, validator_tx in winning_block.validator_txs.items():
             validator_power = self._pouw_book[validator_idx] + 1
-            for worker_idx, worker_acc in validator_tx['benigh_worker_to_acc'].items():
-                if worker_idx in winning_block.worker_to_model_sig:
-                    worker_idx_to_powered_acc[worker_idx] += worker_acc * validator_power
-                    device_to_should_uw[worker_idx] += worker_acc
-            for worker_idx, worker_acc in validator_tx['malicious_worker_to_acc'].items():
-                if worker_idx in winning_block.worker_to_model_sig:
-                    worker_idx_to_powered_acc[worker_idx] += worker_acc * validator_power
-                    device_to_should_uw[worker_idx] -= 0
+            for worker_idx, worker_acc in validator_tx['worker_to_acc'].items():
+                worker_to_acc_weight[worker_idx] += worker_acc * validator_power
+                device_to_should_uw[worker_idx] += worker_acc
+        
         
         # (1) verify if validator honestly assigned useful work to devices
         # validator_self_assigned_uw = winning_block.device_to_uw[winning_block.produced_by] - self._pouw_book[winning_block.produced_by]
@@ -797,8 +716,8 @@ class Device():
 
         # (2) verify if validator honestly aggregated the models
         # normalize weights to between 0 and 1
-        worker_to_acc_weight = {worker_idx: acc/sum(worker_idx_to_powered_acc.values()) for worker_idx, acc in worker_idx_to_powered_acc.items()}
-                
+        worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
+        
         # apply weights to worker's model signatures
         workers_layer_to_model_sig_row = {}
         workers_layer_to_model_sig_col = {}
@@ -828,6 +747,8 @@ class Device():
 
         self._resync_to = self.verified_winning_block.produced_by # in case of offline, resync to this validator's chain
         
+        self.old_pouw_book = deepcopy(self._pouw_book) # helper used in check_validation_performance()
+
         # grant useful work to devices
         for device_idx, useful_work in self.verified_winning_block.device_to_uw.items():
             self._pouw_book[device_idx] += useful_work
@@ -868,49 +789,23 @@ class Device():
             return True
     
     def check_validation_performance(self, idx_to_device, comm_round):
-        incorrect_pos = 0
-        incorrect_neg = 0
-        
-        workers_recorded_in_this_block = set()
-        for _, validator_tx in self.verified_winning_block.validator_txs.items():
-            for worker_idx, _ in validator_tx['benigh_worker_to_acc'].items():
-                workers_recorded_in_this_block.add(worker_idx)
-            for worker_idx, _ in validator_tx['malicious_worker_to_acc'].items():
-                workers_recorded_in_this_block.add(worker_idx)
 
-        pos_voted_widxs = set(self.verified_winning_block.worker_to_model_sig.keys())
-        neg_voted_widxs = workers_recorded_in_this_block.difference(self.verified_winning_block.worker_to_model_sig.keys())
+        worker_to_acc_weight = defaultdict(float)
+        for validator_idx, validator_tx in self.verified_winning_block.validator_txs.items():
+            validator_power = self.old_pouw_book[validator_idx] + 1
+            for worker_idx, worker_acc in validator_tx['worker_to_acc'].items():
+                worker_to_acc_weight[worker_idx] += worker_acc * validator_power
+        worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
 
-        total_malicious = 0
-        for pos_voted_widx in pos_voted_widxs:
-            if idx_to_device[pos_voted_widx]._is_malicious:
-                incorrect_pos += 1
-                total_malicious += 1
-        for neg_voted_widx in neg_voted_widxs:
-            if not idx_to_device[neg_voted_widx]._is_malicious:
-                incorrect_neg += 1
-            else:
-                total_malicious += 1
-        
-        failed_identified_neg = incorrect_pos
-        print(f"{incorrect_pos} / {len(pos_voted_widxs)} are malicious but used.")
-        print(f"{incorrect_neg} / {len(neg_voted_widxs)} are legit but not used.")
-        print(f"{failed_identified_neg} / {total_malicious} failed identified melicious.")
+        i = 1
+        for widx, acc_weight in sorted(worker_to_acc_weight.items(), key=lambda x: x[1]):
+            if idx_to_device[widx]._is_malicious:
+                if i < len(worker_to_acc_weight) // 2:
+                    print(f"Malicious worker {widx} has accuracy-model-weight {acc_weight:.3f}, ranked {i}, in the lower half (lower rank means smaller weight).")
+                else:
+                    print("\033[91m" + f"Malicious worker {widx} has accuracy-model-weight {acc_weight:.2f}, ranked {i}, in the higher half (higher rank means heavier weight)." + "\033[0m")
+            i += 1
 
-        # incorrect_rate = (incorrect_pos + incorrect_neg)/(len(pos_voted_widxs) + len(neg_voted_widxs))
-        # print(f"Incorrect rate: {incorrect_rate:.2%}")
-        try:
-            false_positive_rate = incorrect_pos/len(pos_voted_widxs)
-        except ZeroDivisionError:
-            # no models were voted positively
-            false_positive_rate = 0 # TODO - should be 0?
-        print(f"False positive rate: {false_positive_rate:.2%}")  
-        print(f"Failed identified malicious rate: {failed_identified_neg/total_malicious:.2%}")
-        
-
-        # record validation mechanism performance
-        wandb.log({"comm_round": comm_round, f"{self.idx}_winning_block_false_positive_rate": round(false_positive_rate, 2)})
-        wandb.log({"comm_round": comm_round, f"{self.idx}_winning_block_incorrect_rate": round(incorrect_rate, 2)})
 
     def eval_model_by_local_test(self, model):
         """

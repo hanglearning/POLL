@@ -233,8 +233,7 @@ def main():
             device._final_global_model = None
             device.produced_block = None 
             device.worker_to_model_sig = {}           
-            device.benigh_worker_to_acc = {}
-            device.malicious_worker_to_acc = {}
+            device.worker_to_acc = {}
             device._device_to_ungranted_uw = defaultdict(float)
             
         ''' Device Starts LBFL '''
