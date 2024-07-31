@@ -95,7 +95,7 @@ parser.add_argument('--attack_type', type=int, default=0, help='0 - no attack, 1
 ####################### pruning setting #######################
 parser.add_argument('--rewind', type=int, default=1, help="reinit ticket model parameters before training")
 parser.add_argument('--target_sparsity', type=float, default=0.1, help='target sparsity for pruning, stop pruning if below this threshold')
-parser.add_argument('--prune_step', type=float, default=0.05, help='increment of pruning step')
+parser.add_argument('--max_prune_step', type=float, default=0.05, help='max increment of pruning step')
 parser.add_argument('--prune_acc_drop_threshold', type=float, default=0.05, help='if the accuracy drop is larger than this threshold, stop prunning')
 parser.add_argument('--worker_prune_acc_trigger', type=float, default=0.8, help='must achieve this accuracy to trigger worker to post prune its local model')
 # parser.add_argument('--validator_prune_acc_trigger', type=float, default=0.8, help='must achieve this accuracy to trigger validator to post prune the global model')
