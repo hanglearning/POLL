@@ -361,12 +361,6 @@ class Device():
         # get models for aggregation
         worker_to_model = {worker_idx: self._verified_worker_txs[worker_idx]['model'] for worker_idx in worker_to_acc_weight}
 
-        # only preserve model signature of selected models
-        self.worker_to_model_sig = {worker_idx: self.worker_to_model_sig[worker_idx] for worker_idx in worker_to_acc_weight}
-
-        # only assign useful work to selected models
-        self._device_to_ungranted_uw = {worker_idx: self._device_to_ungranted_uw[worker_idx] for worker_idx in worker_to_acc_weight}
-
         # normalize weights to between 0 and 1
         worker_to_acc_weight = {worker_idx: acc/sum(worker_to_acc_weight.values()) for worker_idx, acc in worker_to_acc_weight.items()}
         
@@ -527,18 +521,18 @@ class Device():
                     print(f"\n{self.role} {self.idx}'s chain is resynced from last time's picked winning validator {self._resync_to}.")                    
                     return True
                 else:
-                    print(f"\nDevice {self.idx}'s _resync_to device's ({self._resync_to}) chain is invalid, resync to another online peer based on '(historical_uw + 1) * (current_uw + 1)'.")
+                    print(f"\nDevice {self.idx}'s _resync_to device's ({self._resync_to}) chain is invalid, resync to another online peer with the top useful work obtained.")
             else:
-                print(f"\nDevice {self.idx}'s _resync_to device ({self._resync_to})'s chain is not longer than its own chain. May need to resync to another online peer based on '(historical_uw + 1) * (current_uw + 1)'.") # in the case both devices were offline
+                print(f"\nDevice {self.idx}'s _resync_to device ({self._resync_to})'s chain is not longer than its own chain. May need to resync to another online peer with the top useful work obtained.") # in the case both devices were offline
         else:
-            print(f"\nDevice {self.idx}'s does not have a _resync_to device, resync to another online peer based on '(historical_uw + 1) * (current_uw + 1)'.")
+            print(f"\nDevice {self.idx}'s does not have a _resync_to device, resync to another online peer with the top useful work obtained.")
 
 
         # resync chain from online peers using the same logic in pick_winning_block()
         online_peers = [peer for peer in self.peers if idx_to_device[peer].is_online() and idx_to_device[peer].blockchain.get_last_block()]
-        online_peer_to_uw_criterion = {peer: (self._pouw_book[peer] + 1) * (idx_to_device[peer].blockchain.get_last_block().device_to_uw[peer] + 1) for peer in online_peers}
-        top_uw_pruned = max(online_peer_to_uw_criterion.values())
-        candidates = [peer for peer, uw_pruned in online_peer_to_uw_criterion.items() if uw_pruned == top_uw_pruned]
+        online_peer_to_uw = {peer: self._pouw_book[peer] for peer in online_peers}
+        top_uw = max(online_peer_to_uw.values())
+        candidates = [peer for peer, uw in online_peer_to_uw.items() if uw == top_uw]
         self._resync_to = random.choice(candidates)
         resync_to_device = idx_to_device[self._resync_to]
 
@@ -569,6 +563,8 @@ class Device():
         blockchain_to_check = chain_to_check.get_chain()
         for i in range(1, len(blockchain_to_check)):
             if not blockchain_to_check[i].previous_block_hash == blockchain_to_check[i-1].compute_hash():
+                return False
+            if blockchain_to_check[i].produced_by == blockchain_to_check[i-1].produced_by:
                 return False
         return True
         
@@ -620,8 +616,7 @@ class Device():
     def pick_winning_block(self, idx_to_device):
 
         # NOTE - if change logic of pick_winning_block(), also need to change logic in resync_chain()
-        
-        # pick the block with the highest (useful_work * pruned_amount) - mitigate monopoly
+
         picked_block = None
 
         if not self._received_blocks:
@@ -629,10 +624,12 @@ class Device():
             return picked_block
         
         received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks.values()}
-        received_validators_pouw_book = {block.produced_by: self._pouw_book[block.produced_by] for block in self._received_blocks.values()}
-        validator_to_uw_criterion = {validator: (uw + 1) * (assigned_uw + 1) for validator, uw in received_validators_pouw_book.items() for device, assigned_uw in received_validators_to_blocks[validator].device_to_uw.items() if validator == device}
-        top_uw_pruned = max(validator_to_uw_criterion.values())
-        candidates = [validator for validator, uw_pruned in validator_to_uw_criterion.items() if uw_pruned == top_uw_pruned]
+        # the same validator cannot win consecutively - mitigate monopoly
+        if self.blockchain.get_last_block():
+            received_validators_to_blocks.pop(self.blockchain.get_last_block().produced_by, None)
+        received_validators_pouw_book = {block.produced_by: self._pouw_book[block.produced_by] for block in received_validators_to_blocks.values()}
+        top_uw = max(received_validators_pouw_book.values())
+        candidates = [validator for validator, uw in received_validators_pouw_book.items() if uw == top_uw]
         # get the winning validator
         winning_validator = random.choice(candidates) # may cause forking in the 1st round and some middle rounds
         if self.idx in candidates:
@@ -732,7 +729,7 @@ class Device():
                     workers_layer_to_model_sig_col[layer] += model_sig_col[layer] * acc_weight
         
         if not self.compare_dicts_of_tensors(layer_to_model_sig_row, workers_layer_to_model_sig_row) or not self.compare_dicts_of_tensors(layer_to_model_sig_col, workers_layer_to_model_sig_col):
-            print(f"{self.role} {self.idx}'s picked winning block has invalid workers' model signatures or useful work book is inconsistent with the block producer's.")
+            print(f"{self.role} {self.idx}'s picked winning block has invalid workers' model signatures or useful work book is inconsistent with the block producer's.") # this could happen if the owner of this winning block A had resynced to another device B's chain, so when this device C actually resynced to B's chain, got B's pouw book, but still gets A's block, which is not valid anymore. Resync in next round.
             return False
 
         self.verified_winning_block = winning_block
@@ -764,6 +761,10 @@ class Device():
 
         print(f"\n{self.role} {self.idx} has appended the winning block produced by {self.verified_winning_block.produced_by}.")
 
+        os.makedirs(f'{self.args.log_dir}/block_append_record/', exist_ok=True)
+        with open(f'{self.args.log_dir}/block_append_record/round_{comm_round}.txt', 'a') as f:
+            f.write(f'{self.idx} appends {self.verified_winning_block.produced_by}\n')
+
     ''' Helper Functions '''
 
     def compare_dicts_of_tensors(self, dict1, dict2, atol=1e-3, rtol=1e-3):
@@ -788,6 +789,10 @@ class Device():
             return True
     
     def check_validation_performance(self, idx_to_device, comm_round):
+
+        if not self.verified_winning_block:
+            print(f"\nNo verified winning block to check validation performance. Device {self.idx} will resync to last time's picked winning validator({self._resync_to})'s chain.")
+            return
 
         worker_to_acc_weight = defaultdict(float)
         for validator_idx, validator_tx in self.verified_winning_block.validator_txs.items():

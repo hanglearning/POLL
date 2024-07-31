@@ -374,14 +374,14 @@ def main():
                 if idx_to_device[block_produced_by]._is_malicious:
                    malicious_block = 1
                    malicious_winning_count += 1
-                   with open(f'{args.log_dir}/malicious_winning_record.txt', 'a') as f:
-                    f.write(f'{comm_round}\n')
+                #    with open(f'{args.log_dir}/malicious_winning_record.txt', 'a') as f:
+                #     f.write(f'{comm_round}\n')
                    break
         malicious_block_record.append([comm_round, malicious_block])
     
-    print(f"{malicious_winning_count}/{comm_round} times malicious device won a block.")
-    with open(f'{args.log_dir}/malicious_winning_record.txt', 'a') as f:
-        f.write(f'Total times: malicious_winning_count/{comm_round}\n')
+    # print(f"{malicious_winning_count}/{comm_round} times malicious device won a block.")
+    # with open(f'{args.log_dir}/malicious_winning_record.txt', 'a') as f:
+    #     f.write(f'Total times: malicious_winning_count/{comm_round}\n')
     malicious_block_record = wandb.Table(data=malicious_block_record, columns = ["comm_round", "malicious_block"])
     wandb.log({log_root_name : wandb.plot.scatter(malicious_block_record, "comm_round", "malicious_block", title="Rounds that Malicious Devices' Blocks Accepted")})
 
