@@ -123,7 +123,7 @@ class Device():
 
         # lazy worker
         if self._is_malicious and self.args.attack_type == 3:
-            max_epoch = int(max_epoch * 0.2)
+            max_epoch = int(max_epoch * 0.1)
 
 
         # init max_acc as the initial global model acc on local training set

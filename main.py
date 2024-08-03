@@ -81,8 +81,7 @@ parser.add_argument('--n_samples', type=int, default=20)
 parser.add_argument('--n_classes', type=int, default=3)
 parser.add_argument('--n_malicious', type=int, default=8, help="number of malicious nodes in the network")
 
-parser.add_argument('--noise_variance', type=int, default=1, help="noise variance level of the injected Gaussian Noise")
-parser.add_argument('--target_acc', type=float, default=0.9, help='target accuracy for training and/or pruning, gone offline if achieved')
+parser.add_argument('--noise_variance', type=int, default=3, help="noise variance level of the injected Gaussian Noise")
 
 ####################### validation and rewards setting #######################
 parser.add_argument('--pass_all_models', type=int, default=0, help='turn off validation and pass all models, used for debug or create baselines')
@@ -211,7 +210,6 @@ def main():
         random.shuffle(devices_list)
         
         ''' find online devices '''
-        # devices exit the network if reaching target_sparsity and target_acc
         init_online_devices = [device for device in devices_list if device.set_online()]
         if len(init_online_devices) < 2:
             print(f"Total {len(init_online_devices)} device online, skip this round.")
