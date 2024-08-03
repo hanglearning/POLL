@@ -345,11 +345,11 @@ def sum_over_model_params(model):
         for name, weight_params in module.named_parameters():
             if 'weight' in name:
                 if weight_params.is_cuda:
-                    layer_to_model_sig_row[layer] = torch.sum(weight_params.cpu(), dim=row_dim)
-                    layer_to_model_sig_col[layer] = torch.sum(weight_params.cpu(), dim=col_dim)
+                    layer_to_model_sig_row[layer] = torch.sum(weight_params.cpu().detach(), dim=row_dim)
+                    layer_to_model_sig_col[layer] = torch.sum(weight_params.cpu().detach(), dim=col_dim)
                 else:
-                    layer_to_model_sig_row[layer] = torch.sum(weight_params, dim=row_dim)
-                    layer_to_model_sig_col[layer] = torch.sum(weight_params, dim=col_dim)
+                    layer_to_model_sig_row[layer] = torch.sum(weight_params.detach(), dim=row_dim)
+                    layer_to_model_sig_col[layer] = torch.sum(weight_params.detach(), dim=col_dim)
 
     return layer_to_model_sig_row, layer_to_model_sig_col
 

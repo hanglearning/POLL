@@ -186,6 +186,9 @@ def main():
         device = Device(i + 1, is_malicious, args, train_loaders[i], test_loaders[i], user_labels[i], global_test_loader, init_global_model, init_global_model_path)
         if is_malicious:
             print(f"Assigned device {i + 1} malicious.")
+            # label flipping attack
+            if args.attack_type == 2:
+                device._train_loader.dataset.targets = 9 - device._train_loader.dataset.targets
         idx_to_device[i + 1] = device
     
     devices_list = list(idx_to_device.values())

@@ -1,6 +1,7 @@
-import copy
+from copy import deepcopy
 import json
 from hashlib import sha256
+import torch
 
 class Block:
     def __init__(self, previous_block_hash, global_model, device_to_uw, produced_by, worker_to_model_sig, validator_txs, validator_rsa_pub_key):
@@ -25,44 +26,3 @@ class Block:
 
     def remove_signature_for_verification(self):
         self.signature = None
-
-    # returners of the private attributes
-    
-    def get_previous_block_hash(self):
-        return self.previous_block_hash
-    
-    def get_validator_rsa_pub_key(self):
-        return self.validator_rsa_pub_key
-
-    ''' Miner Specific '''
-    def set_previous_block_hash(self, hash_to_set):
-        self._previous_block_hash = hash_to_set
-
-    def set_mined_by(self, mined_by):
-        self._mined_by = mined_by
-    
-    def get_mined_by(self):
-        return self._mined_by
-
-    def set_signature(self, signature):
-        # signed by mined_by node
-        self._signature = signature
-
-    def get_signature(self):
-        return self._signature
-
-    def set_mining_rewards(self, mining_rewards):
-        self._mining_rewards = mining_rewards
-
-    def get_mining_rewards(self):
-        return self._mining_rewards
-    
-    def get_txs(self):
-        return self._txs
-
-    # a temporary workaround to free GPU mem by delete txs stored in the blocks. Not good when need to resync chain
-    def free_tx(self):
-        try:
-            del self._txs
-        except:
-            pass

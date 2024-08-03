@@ -1,4 +1,5 @@
 # TODO - record accuracy and pruned amount after training and pruning
+# NOTE - pick_winning_block(), resync_chain(), validate_chain() and check_resync_eligibility_when_picking() are related to each other
 
 import torch
 import numpy as np
@@ -119,10 +120,6 @@ class Device():
                 param.data.copy_(source_params[name].data)
 
         max_epoch = self.args.epochs
-
-        # label flipping attack
-        if self._is_malicious and self.args.attack_type == 2:
-            self._train_loader.dataset.targets = 9 - self._train_loader.dataset.targets
 
         # lazy worker
         if self._is_malicious and self.args.attack_type == 3:
@@ -477,6 +474,16 @@ class Device():
         for block in self.blockchain.chain:
             for idx in block.device_to_uw:
                 self._pouw_book[idx] += block.device_to_uw[idx]
+
+    def check_resync_eligibility_when_picking(self, idx_to_device, winning_block):
+        to_resync_chain = idx_to_device[self._resync_to].blockchain
+        if to_resync_chain.get_chain_length() == 0:
+            print(f"resync_to_device {self._resync_to}'s chain length is 0. Chain not resynced. Resync next round.") # may resync to the same device, but the device may have appended other blocks to make its chain valid at the beginning of the next round
+            return False
+        if len(to_resync_chain.chain) >= 2 and to_resync_chain.chain[-2].produced_by == to_resync_chain.chain[-1].produced_by == winning_block.produced_by:
+            print(f"resync_to_device {self._resync_to}'s chain's last two blocks' producer is identical to the winning_block's ({winning_block.produced_by}). Chain not resynced. Resync next round.")
+            return False
+        return True
     
     def resync_chain(self, comm_round, idx_to_device, skip_check_peers=False):
         # NOTE - if change logic of resync_chain(), also need to change logic in pick_winning_block()
@@ -562,9 +569,9 @@ class Device():
         # TODO - should also verify the block signatures and the model signatures
         blockchain_to_check = chain_to_check.get_chain()
         for i in range(1, len(blockchain_to_check)):
-            if not blockchain_to_check[i].previous_block_hash == blockchain_to_check[i-1].compute_hash():
+            if blockchain_to_check[i].previous_block_hash != blockchain_to_check[i-1].compute_hash():
                 return False
-            if blockchain_to_check[i].produced_by == blockchain_to_check[i-1].produced_by:
+            if i >= 2 and blockchain_to_check[i].produced_by == blockchain_to_check[i-1].produced_by == blockchain_to_check[i-2].produced_by:
                 return False
         return True
         
@@ -615,7 +622,7 @@ class Device():
 
     def pick_winning_block(self, idx_to_device):
 
-        # NOTE - if change logic of pick_winning_block(), also need to change logic in resync_chain()
+        # NOTE - if change logic of pick_winning_block(), also need to change logic in resync_chain(), validate_chain() and check_resync_eligibility_when_picking()
 
         picked_block = None
 
@@ -624,9 +631,10 @@ class Device():
             return picked_block
         
         received_validators_to_blocks = {block.produced_by: block for block in self._received_blocks.values()}
-        # the same validator cannot win consecutively - mitigate monopoly
-        if self.blockchain.get_last_block():
-            received_validators_to_blocks.pop(self.blockchain.get_last_block().produced_by, None)
+        # the same validator cannot win three times consecutively - mitigate monopoly
+        if self.blockchain.get_chain_length() >= 2:
+            if self.blockchain.chain[-2].produced_by == self.blockchain.chain[-1].produced_by:
+                received_validators_to_blocks.pop(self.blockchain.chain[-1].produced_by, None)
         received_validators_pouw_book = {block.produced_by: self._pouw_book[block.produced_by] for block in received_validators_to_blocks.values()}
         top_uw = max(received_validators_pouw_book.values())
         candidates = [validator for validator, uw in received_validators_pouw_book.items() if uw == top_uw]
@@ -678,8 +686,10 @@ class Device():
 
         # check last block hash match
         if not self.check_last_block_hash_match(winning_block):
-            print(f"{self.role} {self.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Resync to its chain.")
+            print(f"{self.role} {self.idx}'s last block hash conflicts with {winning_block.produced_by}'s block. Checking chain resyncing eligibility...")
             self._resync_to = winning_block.produced_by
+            if not self.check_resync_eligibility_when_picking(idx_to_device, winning_block):
+                return False
             self.resync_chain(comm_round, idx_to_device, skip_check_peers = True)
             self.post_resync(idx_to_device)
         
@@ -738,7 +748,7 @@ class Device():
     def process_and_append_block(self, comm_round):
 
         if not self.verified_winning_block:
-            print(f"\nNo verified winning block to append. Device {self.idx} will resync to last time's picked winning validator({self._resync_to})'s chain.")
+            print(f"\nNo verified winning block to append. Device {self.idx} may resync to last time's picked winning validator({self._resync_to})'s chain.")
             return
 
         self._resync_to = self.verified_winning_block.produced_by # in case of offline, resync to this validator's chain
@@ -791,7 +801,7 @@ class Device():
     def check_validation_performance(self, idx_to_device, comm_round):
 
         if not self.verified_winning_block:
-            print(f"\nNo verified winning block to check validation performance. Device {self.idx} will resync to last time's picked winning validator({self._resync_to})'s chain.")
+            print(f"\nNo verified winning block to check validation performance. Device {self.idx} may resync to last time's picked winning validator({self._resync_to})'s chain.")
             return
 
         worker_to_acc_weight = defaultdict(float)
